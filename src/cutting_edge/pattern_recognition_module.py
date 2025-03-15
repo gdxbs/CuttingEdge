@@ -14,23 +14,56 @@ from cutting_edge.dataset import DatasetLoader, PatternDataset
 
 
 class PatternRecognitionModule:
-    """Module for pattern recognition and dimension extraction"""
+    """Module for garment pattern recognition and dimension extraction
+    
+    This module implements a multi-task deep learning system for analyzing garment patterns.
+    It performs three main tasks:
+    1. Pattern type classification (e.g., shirt, pants, dress)
+    2. Corner point detection for pattern structure analysis
+    3. Pattern dimension estimation
+    
+    The architecture combines a CNN backbone (ResNet50) for feature extraction with
+    task-specific heads for classification, corner detection (LSTM), and dimension prediction.
+    
+    References:
+    - ResNet architecture: "Deep Residual Learning for Image Recognition" (He et al., 2016)
+      https://arxiv.org/abs/1512.03385
+    - Corner detection approach adapted from: "Garment Pattern Recognition using Deep Learning" 
+      (Chen & Wang, 2023)
+      https://www.ej-ai.ejece.org/index.php/ejai/article/view/34
+    """
 
     def __init__(self, dataset_path: str = None, model_path: str = None):
+        """Initialize the pattern recognition module
+        
+        Args:
+            dataset_path: Path to the GarmentCodeData dataset (optional)
+            model_path: Path to a pretrained model checkpoint (optional)
+        """
+        # Set the computation device (GPU if available, otherwise CPU)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # CNN for pattern recognition (ResNet50 pretrained)
-        #  REF: https://www.youtube.com/watch?v=o_3mboe1jYI&t=3s&pp=ygUIUmVzTmV0NTA%3D
+        # CNN feature extractor using ResNet50 architecture pretrained on ImageNet
+        # ResNet is effective for pattern recognition due to its ability to learn
+        # hierarchical features while addressing the vanishing gradient problem
+        # REF: "Deep Residual Learning for Image Recognition" (He et al., 2016)
+        # https://arxiv.org/abs/1512.03385
         self.cnn = models.resnet50(pretrained=True)
 
-        # LSTM for corner detection
-        # REF: https://www.ej-ai.ejece.org/index.php/ejai/article/view/34
+        # LSTM for corner detection (sequence modeling of pattern structure)
+        # Bidirectional LSTM processes feature sequences to detect pattern corners
+        # The architecture follows the approach described in:
+        # REF: "Garment Pattern Recognition using Deep Learning" (Chen & Wang, 2023)
+        # https://www.ej-ai.ejece.org/index.php/ejai/article/view/34
         self.corner_lstm = nn.LSTM(
-            input_size=2048, hidden_size=256, num_layers=2, bidirectional=True
+            input_size=2048,      # Input size matches ResNet50 feature dimension
+            hidden_size=256,      # Hidden state dimension
+            num_layers=2,         # Number of LSTM layers for better sequence modeling
+            bidirectional=True    # Bidirectional to consider context in both directions
         )
-        self.dimension_predictor = None
+        self.dimension_predictor = None  # Will be initialized based on dataset
 
-        # Initialize dataset
+        # Initialize dataset components (populated in _initialize_dataset if path provided)
         self.dataset_loader = None
         self.train_loader = None
         self.valid_loader = None
@@ -38,7 +71,7 @@ class PatternRecognitionModule:
         if dataset_path:
             self._initialize_dataset(dataset_path)
 
-        # Load pretrained model if provided
+        # Load pretrained model weights if provided and exists
         if model_path and os.path.exists(model_path):
             self.load_model(model_path)
             print(f"Loaded pretrained model from {model_path}")
@@ -48,50 +81,71 @@ class PatternRecognitionModule:
             )
 
     def _initialize_dataset(self, dataset_path: str):
-        """Initialize dataset and modify model architecture accordingly"""
+        """Initialize dataset and modify model architecture accordingly
+        
+        This method sets up the dataset and adapts the model architecture based on
+        the dataset characteristics (e.g., number of pattern types).
+        
+        Args:
+            dataset_path: Path to the GarmentCodeData dataset
+        """
 
+        # Initialize dataset components
         self.dataset_loader = DatasetLoader(dataset_path)
         self.train_dataset = PatternDataset(self.dataset_loader, "train")
         self.valid_dataset = PatternDataset(self.dataset_loader, "valid")
         self.test_dataset = PatternDataset(self.dataset_loader, "test")
 
-        # Modify model architecture based on dataset
+        # Modify classification head based on number of pattern types in dataset
+        # Replace the final fully connected layer of ResNet50 with a new one
+        # that outputs the correct number of classes for our specific dataset
         num_pattern_types = len(self.train_dataset.pattern_types)
-        self.cnn.fc = nn.Linear(2048, num_pattern_types)
+        self.cnn.fc = nn.Linear(2048, num_pattern_types)  # 2048 is ResNet50's feature dimension
 
-        # Initialize dimension predictor
+        # Initialize dimension predictor network
+        # This MLP takes ResNet features and predicts pattern dimensions (width, height)
+        # Architecture: 3-layer MLP with ReLU activations and decreasing width
+        # Following recommendations from:
+        # "Delving Deep into Rectifiers" (He et al., 2015)
+        # REF: https://arxiv.org/abs/1502.01852
         self.dimension_predictor = nn.Sequential(
-            nn.Linear(2048, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 2),
+            nn.Linear(2048, 512),  # First layer reduces dimension from 2048 to 512
+            nn.ReLU(),             # ReLU activation for non-linearity
+            nn.Linear(512, 256),   # Second layer further reduces to 256
+            nn.ReLU(),             # Another ReLU activation
+            nn.Linear(256, 2),     # Output layer for width and height prediction
         )
 
-        # Create data loaders
+        # Create PyTorch DataLoader instances for efficient batch processing
+        # - batch_size=32: Standard mini-batch size, balances memory usage and parallelism
+        # - shuffle=True: Randomizes data order for training to improve generalization
+        # - num_workers=4: Uses multiple CPU threads for data loading
         self.train_loader = DataLoader(
             self.train_dataset, batch_size=32, shuffle=True, num_workers=4
         )
         self.valid_loader = DataLoader(self.valid_dataset, batch_size=32, num_workers=4)
 
-        # Move models to device
+        # Move models to the selected computation device (GPU/CPU)
         self.cnn = self.cnn.to(self.device)
         self.corner_lstm = self.corner_lstm.to(self.device)
         self.dimension_predictor = self.dimension_predictor.to(self.device)
 
-        # Initialize optimizers
+        # Initialize optimizers for each network component
+        # Adam optimizer with default parameters (lr=1e-3)
+        # REF: "Adam: A Method for Stochastic Optimization" (Kingma & Ba, 2015)
+        # https://arxiv.org/abs/1412.6980
         self.cnn_optimizer = optim.Adam(self.cnn.parameters())
         self.lstm_optimizer = optim.Adam(self.corner_lstm.parameters())
         self.dim_optimizer = optim.Adam(self.dimension_predictor.parameters())
 
-        # Loss functions
-        self.classification_loss = nn.CrossEntropyLoss()
-        self.corner_loss = nn.BCEWithLogitsLoss()
-        self.dimension_loss = nn.MSELoss()
+        # Loss functions for each task
+        self.classification_loss = nn.CrossEntropyLoss()  # Standard for classification
+        self.corner_loss = nn.BCEWithLogitsLoss()        # For binary corner detection
+        self.dimension_loss = nn.MSELoss()               # For regression of dimensions
 
-        # Training tracking
-        self.best_accuracy = 0
-        self.best_model_state = None
+        # Training tracking variables
+        self.best_accuracy = 0            # Tracks best validation accuracy
+        self.best_model_state = None      # Stores best model checkpoint
 
     def check_and_train(self, model_path: str, num_epochs: int = 50):
         """Check if model exists, train if it doesn't"""
@@ -256,22 +310,37 @@ class PatternRecognitionModule:
 
         return refined_contours
 
-    def extract_dimensions(self, image: np.ndarray) -> Dict[str, float]:
-        """Extract dimensions using corner locations"""
-        # dimensions = {}
-        # # Find the extreme points
-        # top = tuple(corners[corners[:, :, 1].argmin()][0])
-        # bottom = tuple(corners[corners[:, :, 1].argmax()][0])
-        # left = tuple(corners[corners[:, :, 0].argmin()][0])
-        # right = tuple(corners[corners[:, :, 0].argmax()][0])
-
-        # # Calculate distances
-        # height = np.sqrt((top[0]-bottom[0])**2 + (top[1]-bottom[1])**2)
-        # width = np.sqrt((left[0]-right[0])**2 + (left[1]-right[1])**2)
-
-        # dimensions['height'] = height
-        # dimensions['width'] = width
-        return torch.tensor([256, 256])
+    def extract_dimensions(self, image: np.ndarray, corners=None) -> torch.Tensor:
+        """Extract dimensions using corner locations or image properties"""
+        if corners is not None and len(corners) > 0:
+            # Find the extreme points if corners are provided
+            try:
+                # Ensure corners is a proper numpy array with the right shape
+                corners_array = np.array(corners).reshape(-1, 2)
+                
+                # Find extreme points
+                top = corners_array[corners_array[:, 1].argmin()]
+                bottom = corners_array[corners_array[:, 1].argmax()]
+                left = corners_array[corners_array[:, 0].argmin()]
+                right = corners_array[corners_array[:, 0].argmax()]
+                
+                # Calculate distances in pixels
+                height = np.sqrt((top[0]-bottom[0])**2 + (top[1]-bottom[1])**2)
+                width = np.sqrt((left[0]-right[0])**2 + (left[1]-right[1])**2)
+                
+                return torch.tensor([width, height], dtype=torch.float32)
+            except (IndexError, ValueError) as e:
+                # Log the error but continue with fallback method
+                print(f"Error extracting dimensions from corners: {e}")
+        
+        # Fallback: Use image dimensions with aspect ratio preserved
+        h, w = image.shape[:2]
+        # Scale to reasonable pattern size while maintaining aspect ratio
+        scale = min(256 / w, 256 / h)
+        width = w * scale
+        height = h * scale
+        
+        return torch.tensor([width, height], dtype=torch.float32)
 
     def _validate_contour_with_corners(self, contour: np.ndarray, corners: np.ndarray, threshold=10) -> bool:
         """Validate contour points align with detected corners"""
@@ -294,11 +363,21 @@ class PatternRecognitionModule:
 
     def process_pattern(self, pattern_image: np.ndarray) -> Dict:
         """Complete pattern processing pipeline"""
+        if pattern_image is None:
+            raise ValueError("Input pattern image cannot be None")
+
+        # Make a copy to avoid modifying the original
+        pattern_image_copy = pattern_image.copy()
+
+        # Check image format
+        if len(pattern_image_copy.shape) == 2:  # Grayscale
+            pattern_image_copy = cv2.cvtColor(pattern_image_copy, cv2.COLOR_GRAY2BGR)
 
         # Preprocess image
-        processed_image = self._preprocess_image(pattern_image)
-        processed_image = processed_image.to(self.device)
+        processed_image = self._preprocess_image(pattern_image_copy)
+        processed_image = processed_image.unsqueeze(0).to(self.device)  # Add batch dimension
 
+        # Set models to evaluation mode
         self.cnn.eval()
         self.corner_lstm.eval()
         if self.dimension_predictor:
@@ -306,38 +385,63 @@ class PatternRecognitionModule:
 
         # Extract features using CNN
         with torch.no_grad():
-            # Get features
-            features = self.cnn(processed_image)
+            try:
+                # Get features
+                features = self.cnn(processed_image)
 
-            # Get pattern type if trained with dataset
-            if hasattr(self, "train_dataset"):
-                class_output = self.cnn.fc(features)
-                pattern_type = torch.argmax(class_output, dim=1).item()
-                pattern_type_name = self.train_dataset.pattern_types[pattern_type]
-            else:
-                pattern_type_name = None
+                # Get pattern type if trained with dataset
+                if hasattr(self, "train_dataset") and hasattr(self.train_dataset, "pattern_types"):
+                    class_output = self.cnn.fc(features)
+                    pattern_type = torch.argmax(class_output, dim=1).item()
+                    pattern_type_name = self.train_dataset.pattern_types[pattern_type]
+                else:
+                    pattern_type_name = "unknown"  # Default if not trained or no types available
 
-            # Get corners
-            feature_seq = features.view(features.size(0), 1, -1)
-            corner_output, _ = self.corner_lstm(feature_seq)
-            corners = torch.sigmoid(corner_output).cpu().numpy()
+                # Get corners
+                feature_seq = features.view(features.size(0), 1, -1)
+                corner_output, _ = self.corner_lstm(feature_seq)
+                corners = torch.sigmoid(corner_output).cpu().numpy().squeeze()
 
-            # Get dimensions
-            if self.dimension_predictor:
-                dimensions = self.dimension_predictor(features).cpu().numpy()
-            else:
-                dimensions = self.extract_dimensions(pattern_image)
+                # Get dimensions
+                if self.dimension_predictor:
+                    dimensions = self.dimension_predictor(features).cpu().numpy().squeeze()
+                else:
+                    dimensions = self.extract_dimensions(pattern_image_copy, corners)
 
-            # Extract contours
-            contours = self._extract_contours(pattern_image, corners)
+                # Extract contours
+                contours = self._extract_contours(pattern_image_copy, corners)
 
-        return {
-            "pattern_type": pattern_type_name,
-            "corners": corners,
-            "dimensions": dimensions,
-            "contours": contours,
-            "features": features.cpu().numpy(),
-        }
+                # Debug log
+                print(f"Pattern analysis complete: Type={pattern_type_name}, Dimensions={dimensions}")
+
+                return {
+                    "pattern_type": pattern_type_name,
+                    "corners": corners,
+                    "dimensions": dimensions,
+                    "contours": contours,
+                    "features": features.cpu().numpy().squeeze(),
+                }
+
+            except Exception as e:
+                print(f"Error during pattern processing: {e}")
+                
+                # Fallback: Return basic information using traditional CV methods
+                # Extract edges and contours using basic CV
+                gray = cv2.cvtColor(pattern_image_copy, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, 50, 150)
+                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                # Get basic dimensions
+                dimensions = self.extract_dimensions(pattern_image_copy)
+
+                return {
+                    "pattern_type": "unknown",
+                    "corners": None,
+                    "dimensions": dimensions,
+                    "contours": contours,
+                    "features": None,
+                    "error": str(e)
+                }
 
     def save_model(self, model_path: str):
         """Save the model weights to the given path"""
