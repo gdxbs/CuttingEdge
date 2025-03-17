@@ -47,13 +47,13 @@ class ClothRecognitionModule:
         # REF: "EfficientNet: Rethinking Model Scaling for CNNs" (Tan & Le, 2019)
         # https://arxiv.org/abs/1905.11946
         self.efficientnet = models.efficientnet_b0(pretrained=True)  # Pretrained on ImageNet-1k
-        
+
         # Modify the classifier head to output the correct number of cloth types
         # The original outputs 1000 classes (ImageNet), we change it to num_cloth_types
         self.efficientnet.classifier[1] = nn.Linear(
             self.efficientnet.classifier[1].in_features, num_cloth_types
         )
-        
+
         # Semantic segmentation model using U-Net architecture
         # U-Net is effective for precise segmentation tasks due to its
         # encoder-decoder structure with skip connections
