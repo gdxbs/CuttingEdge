@@ -214,6 +214,7 @@ class PatternRecognitionModule:
 
                 total_batch_loss.backward()
 
+                # Update weights
                 self.cnn_optimizer.step()
                 self.lstm_optimizer.step()
                 self.dim_optimizer.step()

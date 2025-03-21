@@ -38,7 +38,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=cut_fit_problem"
+addopts = "-v --cov=cutting_edge"
 
 [tool.black]
 line-length = 88
@@ -74,7 +74,7 @@ Repository = "https://github.com/yourusername/cut-fit-problem.git"
 Documentation = "https://github.com/yourusername/cut-fit-problem#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cut_fit_problem"]
+packages = ["src/cutting_edge"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
