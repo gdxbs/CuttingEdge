@@ -188,6 +188,7 @@ class PatternDataset(torch.utils.data.Dataset):
                 "dimensions": dimensions,
             }
         except (KeyError, ValueError, Exception) as e:
+            print(e)
             return {
                 "image": torch.zeros((3, 512, 512)),  # Default empty image
                 "label": 0,  # Default label
