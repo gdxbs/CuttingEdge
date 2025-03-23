@@ -73,8 +73,8 @@ class DatasetLoader:
         # Sewing pattern specification follows the format described in:
         # "GarmentCode: Physics-based automatic patterning of 3D garment models" [Korosteleva and Lee 2021]
         # REF: https://doi.org/10.1145/3478513.3480489
-        with open(f"{base_path}_specification.json", "r") as f:
-            specification = json.load(f)
+        # with open(f"{base_path}_specification.json", "r") as f:
+        #     specification = json.load(f)
 
         # Load pattern image
         # Contains 2D vector graphics of sewing pattern panels and their relative locations
@@ -88,8 +88,8 @@ class DatasetLoader:
         # Load segmentation
         # Contains panel labels for each vertex in the 3D mesh, with stitch vertices labeled separately
         # This enables mapping between 3D garment and 2D pattern pieces
-        with open(f"{base_path}_sim_segmentation.txt", "r") as f:
-            segmentation = f.read().splitlines()
+        # with open(f"{base_path}_sim_segmentation.txt", "r") as f:
+        #     segmentation = f.read().splitlines()
 
         # Extract dimensions from design parameters
         # pattern_size parameter contains width and height in centimeters (real-world scale)
@@ -103,10 +103,10 @@ class DatasetLoader:
 
         return {
         "type": type.split('_')[0],
-        "specification": specification,
+        # "specification": specification,
         "pattern_image": pattern_img,
-        "design_params": design_params,
-        "segmentation": segmentation,
+        # "design_params": design_params,
+        # "segmentation": segmentation,
         "dimensions": dimensions,
         }
     
@@ -156,34 +156,43 @@ class PatternDataset(torch.utils.data.Dataset):
             Dictionary containing processed image tensor, label, and metadata
         """
         
-        pattern_info = self.pattern_list[idx]
-        pattern_data = self.loader.load_pattern(
-            pattern_info
-        )
+        try:
+            pattern_info = self.pattern_list[idx]
+            pattern_data = self.loader.load_pattern(
+                pattern_info
+            )
 
-        # Process pattern image for model input
-        pattern_img = self._preprocess_image(pattern_data["pattern_image"])
+            # Process pattern image for model input
+            pattern_img = self._preprocess_image(pattern_data["pattern_image"])
 
-        # Convert pattern type to numerical label using mapping
-        pattern_type = pattern_data["type"]
-        label = self.pattern_types[pattern_type]
+            # Convert pattern type to numerical label using mapping
+            pattern_type = pattern_data["type"]
+            if pattern_type not in self.pattern_types:
+                raise ValueError(f"Unknown pattern type: {pattern_type}")
+            label = self.pattern_types[pattern_type]
 
-        # Convert dimensions to tensor for regression tasks
-        dimensions = torch.tensor(pattern_data["dimensions"], dtype=torch.float32)
-        ## print({"image": pattern_img,
-        ##    "label": label,
-        ##    "specification": pattern_data["specification"],
-        ##    "design_params": pattern_data["design_params"],
-        ##    "dimensions": dimensions})
-        # Return only the essential fields needed for training
-        # Skip unnecessary fields like specification to avoid collation issues
-        return {
-            "image": pattern_img,
-            "label": label,
-            "specification": pattern_data["specification"],
-            ## "design_params": pattern_data["design_params"],
-            "dimensions": dimensions,
-        }
+            # Convert dimensions to tensor for regression tasks
+            dimensions = torch.tensor(pattern_data["dimensions"], dtype=torch.float32)
+            ## print({"image": pattern_img,
+            ##    "label": label,
+            ##    "specification": pattern_data["specification"],
+            ##    "design_params": pattern_data["design_params"],
+            ##    "dimensions": dimensions})
+            # Return only the essential fields needed for training
+            # Skip unnecessary fields like specification to avoid collation issues
+            return {
+                "image": pattern_img,
+                "label": label,
+                # "specification": pattern_data["specification"],
+                ## "design_params": pattern_data["design_params"],
+                "dimensions": dimensions,
+            }
+        except (KeyError, ValueError, Exception) as e:
+            return {
+                "image": torch.zeros((3, 512, 512)),  # Default empty image
+                "label": 0,  # Default label
+                "dimensions": torch.tensor([256., 256.], dtype=torch.float32)  # Default dimensions
+            }
 
     def _preprocess_image(self, image: Image) -> torch.Tensor:
         """Preprocess pattern image for model input
@@ -236,7 +245,7 @@ class PatternDataset(torch.utils.data.Dataset):
             pattern_data = self.loader.load_pattern(
                 pattern
             )
-            print(list(pattern_data['specification']['pattern']['panels'])[0].split('_')[0])
+            # print(list(pattern_data['specification']['pattern']['panels'])[0].split('_')[0])
             pattern_types.add(pattern_data['type'])
 
         # Sort types alphabetically to ensure consistent indices
