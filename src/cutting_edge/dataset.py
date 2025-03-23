@@ -35,36 +35,40 @@ class DatasetLoader:
         Returns:
             Dictionary containing train/valid/test splits
         """
-
         # Reference to the official ETH Zürich dataset repository
         # REF: https://www.research-collection.ethz.ch/handle/20.500.11850/690432
+        os.chdir("/mnt/d/downloads/690432/690432")
+        # Use dataset_path instead of hardcoded path
         split_path = os.path.join(
-            self.dataset_path,
-            "GarmentCodeData_official_train_valid_test_data_split.json",
+            "GarmentCodeData_v2_official_train_valid_test_data_split_filtered.json",
         )
-
+        
         with open(split_path, "r") as f:
             return json.load(f)
 
-    def load_pattern(self, element_name: str, batch_id: int) -> Dict:
+    def load_pattern(self, pattern: str) -> Dict:
         """Load pattern data for a specific garment element
         
         Args:
-            element_name: Name of the garment element (e.g., 'shirt_01')
+            element_name: Name of the garment element (e.g., 'rand_RVS1QWPXD0')
             batch_id: Batch ID for the garment data
             
         Returns:
             Dictionary containing pattern specification, image, and metadata
         """
+        pattern = f"{pattern}/{pattern.split('/')[-1]}"
 
         base_path = os.path.join(
             self.dataset_path,
-            "GarmentCodeData",
-            f"batch_{batch_id}",
-            "default_body",  # Using neutral body shape as defined in the dataset
-            element_name,
+            pattern
         )
 
+        with open(f"{base_path.rsplit('/rand_', 2)[0]}/dataset_properties_default_body.yaml", "r") as f:
+            dataset_properties = yaml.safe_load(f)
+            type = dataset_properties['generator']['stats']['garment_types'][base_path.split('/')[-1]]['main']
+            print(type)
+        print(base_path.split('/')[-1])
+            
         # Load pattern specification
         # Sewing pattern specification follows the format described in:
         # "GarmentCode: Physics-based automatic patterning of 3D garment models" [Korosteleva and Lee 2021]
@@ -94,17 +98,19 @@ class DatasetLoader:
         # If dimensions are not in the expected format, log and use default values
         # Default of 256x256 is a common standardized size for pattern visualization
         if not isinstance(dimensions, list) or len(dimensions) != 2:
-            print(f"Warning: Invalid dimensions format in {element_name}_design_params.yaml. Using default [256, 256].")
+            print(f"Warning: Invalid dimensions format in {pattern}_design_params.yaml. Using default [256, 256].")
             dimensions = [256, 256]
 
         return {
-            "specification": specification,
-            "pattern_image": pattern_img,
-            "design_params": design_params,
-            "segmentation": segmentation,
-            "dimensions": dimensions,
+        "type": type.split('_')[0],
+        "specification": specification,
+        "pattern_image": pattern_img,
+        "design_params": design_params,
+        "segmentation": segmentation,
+        "dimensions": dimensions,
         }
-
+    
+    
 
 class PatternDataset(torch.utils.data.Dataset):
     """PyTorch Dataset for garment pattern recognition training
@@ -149,26 +155,33 @@ class PatternDataset(torch.utils.data.Dataset):
         Returns:
             Dictionary containing processed image tensor, label, and metadata
         """
+        
         pattern_info = self.pattern_list[idx]
         pattern_data = self.loader.load_pattern(
-            pattern_info["element_name"], pattern_info["batch_id"]
+            pattern_info
         )
 
         # Process pattern image for model input
         pattern_img = self._preprocess_image(pattern_data["pattern_image"])
 
         # Convert pattern type to numerical label using mapping
-        pattern_type = pattern_data["specification"]["type"]
+        pattern_type = pattern_data["type"]
         label = self.pattern_types[pattern_type]
 
         # Convert dimensions to tensor for regression tasks
         dimensions = torch.tensor(pattern_data["dimensions"], dtype=torch.float32)
-
+        ## print({"image": pattern_img,
+        ##    "label": label,
+        ##    "specification": pattern_data["specification"],
+        ##    "design_params": pattern_data["design_params"],
+        ##    "dimensions": dimensions})
+        # Return only the essential fields needed for training
+        # Skip unnecessary fields like specification to avoid collation issues
         return {
             "image": pattern_img,
             "label": label,
             "specification": pattern_data["specification"],
-            "design_params": pattern_data["design_params"],
+            ## "design_params": pattern_data["design_params"],
             "dimensions": dimensions,
         }
 
@@ -201,7 +214,8 @@ class PatternDataset(torch.utils.data.Dataset):
                 ),
             ]
         )
-
+        if image.mode == 'RGBA':
+            image = image.convert('RGB')
         return transform(image)
 
     def _create_pattern_type_mapping(self) -> Dict:
@@ -216,11 +230,14 @@ class PatternDataset(torch.utils.data.Dataset):
 
         # Collect all unique pattern types across the dataset split
         pattern_types = set()
+        
         for pattern in self.pattern_list:
+            print(type(pattern))
             pattern_data = self.loader.load_pattern(
-                pattern["element_name"], pattern["batch_id"]
+                pattern
             )
-            pattern_types.add(pattern_data["specification"]["type"])
+            print(list(pattern_data['specification']['pattern']['panels'])[0].split('_')[0])
+            pattern_types.add(pattern_data['type'])
 
         # Sort types alphabetically to ensure consistent indices
         # This is important for reproducibility and model loading/saving

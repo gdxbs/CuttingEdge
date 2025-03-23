@@ -12,7 +12,24 @@ import torchvision.transforms as transforms
 
 from cutting_edge.dataset import DatasetLoader, PatternDataset
 
+class PatternCNN(nn.Module):
+    def __init__(self, num_classes, pretrained=True):  # Added num_classes parameter
+        super().__init__()
+        # Load pretrained ResNet50
+        resnet = models.resnet50(pretrained=pretrained)
+        # Use all layers except the last FC layer
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
+        # Add our own FC layer with the specified number of classes
+        self.fc = nn.Linear(2048, num_classes)
 
+    def forward(self, x):
+        # Get features from ResNet
+        x = self.features(x)  # Should be [batch_size, 2048, 1, 1]
+        x = torch.flatten(x, 1)  # Flatten to [batch_size, 2048]
+        # Pass through FC layer
+        x = self.fc(x)
+        return x
+    
 class PatternRecognitionModule:
     """Module for garment pattern recognition and dimension extraction
     
@@ -92,15 +109,15 @@ class PatternRecognitionModule:
 
         # Initialize dataset components
         self.dataset_loader = DatasetLoader(dataset_path)
-        self.train_dataset = PatternDataset(self.dataset_loader, "train")
-        self.valid_dataset = PatternDataset(self.dataset_loader, "valid")
+        self.train_dataset = PatternDataset(self.dataset_loader, "training")
+        self.valid_dataset = PatternDataset(self.dataset_loader, "validation")
         self.test_dataset = PatternDataset(self.dataset_loader, "test")
 
         # Modify classification head based on number of pattern types in dataset
         # Replace the final fully connected layer of ResNet50 with a new one
         # that outputs the correct number of classes for our specific dataset
         num_pattern_types = len(self.train_dataset.pattern_types)
-        self.cnn.fc = nn.Linear(2048, num_pattern_types)  # 2048 is ResNet50's feature dimension
+        self.cnn = PatternCNN(num_classes=num_pattern_types)
 
         # Initialize dimension predictor network
         # This MLP takes ResNet features and predicts pattern dimensions (width, height)
@@ -120,10 +137,11 @@ class PatternRecognitionModule:
         # - batch_size=32: Standard mini-batch size, balances memory usage and parallelism
         # - shuffle=True: Randomizes data order for training to improve generalization
         # - num_workers=4: Uses multiple CPU threads for data loading
+
         self.train_loader = DataLoader(
-            self.train_dataset, batch_size=32, shuffle=True, num_workers=4
+            self.train_dataset, batch_size=64, shuffle=True, num_workers=7, pin_memory=True, prefetch_factor=2
         )
-        self.valid_loader = DataLoader(self.valid_dataset, batch_size=32, num_workers=4)
+        self.valid_loader = DataLoader(self.valid_dataset, batch_size=64, num_workers=7, pin_memory=True, prefetch_factor=2)
 
         # Move models to the selected computation device (GPU/CPU)
         self.cnn = self.cnn.to(self.device)
@@ -180,7 +198,6 @@ class PatternRecognitionModule:
             total_loss = 0
             correct_predictions = 0
             total_samples = 0
-
             for batch_idx, batch in enumerate(self.train_loader):
                 images = batch["image"].to(self.device)
                 labels = batch["label"].to(self.device)
@@ -188,14 +205,22 @@ class PatternRecognitionModule:
                 # corner_maps = batch["corner_maps"].to(self.device)
 
                 # Forward pass through CNN
-                features = self.cnn(images)
-                class_output = self.cnn.fc(features)
+                ## features = self.cnn(images)
+                ## print(features.shape)
+                ## features = features.view(features.size(0), -1)
+                ## print(features.shape)
+                ## print(images, labels, dimensions, features)
+                ## class_output = self.cnn.fc(features)
+                ## print(class_output)
+                class_output = self.cnn(images)
+                features = self.cnn.features(images)
+                features = torch.flatten(features, 1)
 
                 # Corner detection
                 # feature_seq = features.view(features.size(0), 1, -1)
                 # corner_output, _ = self.corner_lstm(feature_seq)
 
-                # Dimension prediction
+                # Dimension prediction using features
                 dim_output = self.dimension_predictor(features)
 
                 # Calculate losses
@@ -232,6 +257,7 @@ class PatternRecognitionModule:
 
             # Validation phase
             val_accuracy = self.validate()
+            print(val_accuracy)
 
             # Save best model
             if val_accuracy > self.best_accuracy:
@@ -397,7 +423,7 @@ class PatternRecognitionModule:
                 else:
                     pattern_type_name = "unknown"  # Default if not trained or no types available
 
-                # Get corners
+                # Get corners using flattened features for consistent dimensions
                 feature_seq = features.view(features.size(0), 1, -1)
                 corner_output, _ = self.corner_lstm(feature_seq)
                 corners = torch.sigmoid(corner_output).cpu().numpy().squeeze()
@@ -445,7 +471,10 @@ class PatternRecognitionModule:
 
     def save_model(self, model_path: str):
         """Save the model weights to the given path"""
+        print(os.getcwd())
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
         torch.save(self.best_model_state, model_path)
+
 
     def load_model(self, model_path: str):
         """Load model weights from the given path"""
