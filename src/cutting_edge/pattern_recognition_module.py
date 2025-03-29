@@ -219,10 +219,7 @@ class PatternRecognitionModule:
                 ## print(images, labels, dimensions, features)
                 ## class_output = self.cnn.fc(features)
                 ## print(class_output)
-                class_output = self.cnn(images)
-                features = self.cnn.features(images)
-                features = torch.flatten(features, 1)
-
+                class_output, features = self.cnn(images)
                 # Corner detection
                 # feature_seq = features.view(features.size(0), 1, -1)
                 # corner_output, _ = self.corner_lstm(feature_seq)
