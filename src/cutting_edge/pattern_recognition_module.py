@@ -13,6 +13,12 @@ import torchvision.transforms as transforms
 from cutting_edge.dataset import DatasetLoader, PatternDataset
 
 class PatternCNN(nn.Module):
+    """Pattern CNN using ResNet50 as backbone for feature extraction
+
+    This class implements a CNN using ResNet50 as the backbone for feature extraction.
+    It replaces the final fully connected layer with a new one that outputs the number of classes
+    specified by the user. The model is designed to be used for pattern recognition tasks.
+    """
     def __init__(self, num_classes, pretrained=True):  # Added num_classes parameter
         super().__init__()
         # Load pretrained ResNet50
@@ -30,6 +36,7 @@ class PatternCNN(nn.Module):
         x = self.fc(x)
         return x
     
+
 class PatternRecognitionModule:
     """Module for garment pattern recognition and dimension extraction
     
@@ -257,7 +264,9 @@ class PatternRecognitionModule:
 
             # Validation phase
             val_accuracy = self.validate()
-            print(val_accuracy)
+            print(
+                f"Validation Accuracy: {100.*val_accuracy:.2f}%"
+            )
 
             # Save best model
             if val_accuracy > self.best_accuracy:
@@ -471,8 +480,6 @@ class PatternRecognitionModule:
 
     def save_model(self, model_path: str):
         """Save the model weights to the given path"""
-        print(os.getcwd())
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
         torch.save(self.best_model_state, model_path)
 
 

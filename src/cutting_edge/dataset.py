@@ -37,7 +37,7 @@ class DatasetLoader:
         """
         # Reference to the official ETH Zürich dataset repository
         # REF: https://www.research-collection.ethz.ch/handle/20.500.11850/690432
-        os.chdir("/mnt/d/downloads/690432/690432")
+        # os.chdir("/mnt/d/downloads/690432/690432")
         # Use dataset_path instead of hardcoded path
         split_path = os.path.join(
             "GarmentCodeData_v2_official_train_valid_test_data_split_filtered.json",
@@ -66,9 +66,7 @@ class DatasetLoader:
         with open(f"{base_path.rsplit('/rand_', 2)[0]}/dataset_properties_default_body.yaml", "r") as f:
             dataset_properties = yaml.safe_load(f)
             type = dataset_properties['generator']['stats']['garment_types'][base_path.split('/')[-1]]['main']
-            print(type)
-        print(base_path.split('/')[-1])
-            
+
         # Load pattern specification
         # Sewing pattern specification follows the format described in:
         # "GarmentCode: Physics-based automatic patterning of 3D garment models" [Korosteleva and Lee 2021]
@@ -158,9 +156,7 @@ class PatternDataset(torch.utils.data.Dataset):
         
         try:
             pattern_info = self.pattern_list[idx]
-            pattern_data = self.loader.load_pattern(
-                pattern_info
-            )
+            pattern_data = self.loader.load_pattern(pattern_info)
 
             # Process pattern image for model input
             pattern_img = self._preprocess_image(pattern_data["pattern_image"])
@@ -224,8 +220,11 @@ class PatternDataset(torch.utils.data.Dataset):
                 ),
             ]
         )
+
+        # Convert RGBA images to RGB
         if image.mode == 'RGBA':
             image = image.convert('RGB')
+
         return transform(image)
 
     def _create_pattern_type_mapping(self) -> Dict:
@@ -242,10 +241,8 @@ class PatternDataset(torch.utils.data.Dataset):
         pattern_types = set()
         
         for pattern in self.pattern_list:
-            print(type(pattern))
-            pattern_data = self.loader.load_pattern(
-                pattern
-            )
+            # print(type(pattern))
+            pattern_data = self.loader.load_pattern(pattern)
             # print(list(pattern_data['specification']['pattern']['panels'])[0].split('_')[0])
             pattern_types.add(pattern_data['type'])
 
