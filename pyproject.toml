@@ -19,6 +19,9 @@ dependencies = [
     "matplotlib>=3.8.2",
     "pyyaml>=6.0.1",
     "segmentation-models-pytorch>=0.4.0",
+    "gymnasium>=1.1.1",
+    "stable-baselines3>=2.6.0",
+    "shapely>=2.0.7",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +61,8 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [tool.ruff]
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -66,7 +71,7 @@ select = [
     "C",  # flake8-comprehensions
     "B",  # flake8-bugbear
 ]
-ignore = ["E501"]  # Line length
+ignore = ["E501", "C901"]  # Line length, function complexity
 
 [project.urls]
 Homepage = "https://github.com/gdxbs/CuttingEdge"

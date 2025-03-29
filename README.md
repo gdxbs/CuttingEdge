@@ -2,17 +2,17 @@
 
 ## Overview
 
-Cutting Edge is a computer vision system that analyzes garment patterns and cloth materials using deep learning. The system helps in garment manufacturing by recognizing pattern types, detecting key features, and estimating dimensions for optimal pattern placement.
+Cutting Edge is a computer vision system that analyzes garment patterns and cloth materials using deep learning. The system helps in garment manufacturing by recognizing pattern types, detecting key features, and estimating dimensions for optimal pattern placement on cloth materials to minimize waste.
 
 ![System Diagram](https://via.placeholder.com/800x400?text=Cutting+Edge+System+Architecture)
 
 ## Features
 
-- **Pattern Recognition**: Identifies pattern types from images
-- **Cloth Material Analysis**: Analyzes cloth properties and contours
+- **Pattern Recognition**: Identifies pattern types from images using ResNet50 architecture
+- **Cloth Material Analysis**: Analyzes cloth properties and contours using EfficientNet and U-Net
 - **Dimension Estimation**: Extracts accurate dimensions for both patterns and cloth
 - **Pattern Fitting**: Optimizes pattern placement on cloth using Hierarchical Reinforcement Learning
-- **Material Utilization**: Maximizes cloth utilization and minimizes waste
+- **Material Utilization**: Maximizes cloth utilization and minimizes waste using optimization algorithms
 
 ## How It Works
 
@@ -65,24 +65,31 @@ The system works with the GarmentCodeData dataset, which includes:
 1. **Pattern Recognition Module**: `pattern_recognition_module.py`
    - Based on ResNet50 with custom heads for different tasks
    - Trained with supervised learning on pattern types and dimensions
+   - Uses LSTM for corner detection and dimension prediction
 
 2. **Cloth Recognition Module**: `cloth_recognition_module.py`
-   - Uses EfficientNet and U-Net architectures
+   - Uses EfficientNet-B0 for cloth type classification
+   - Implements U-Net with ResNet34 backbone for semantic segmentation
    - Combines deep learning with traditional computer vision techniques
+   - Estimates cloth dimensions for cutting planning
 
 3. **Pattern Fitting Module**: `pattern_fitting_module.py`
    - Implements Hierarchical Reinforcement Learning for pattern placement
-   - Uses manager-worker architecture for sequential decision-making
-   - Optimizes for material utilization and waste reduction
+   - Uses Proximal Policy Optimization (PPO) algorithm from stable-baselines3
+   - Creates packing environment with OpenAI Gym interface
+   - Optimizes for material utilization, compactness, and edge usage
+   - Provides visualization of fitted patterns
 
 4. **Dataset Handling**: `dataset.py`
    - Loads and preprocesses the GarmentCodeData dataset
    - Handles train/validation/test splits
    - Transforms data for model training
+   - Implements PyTorch Dataset interface for efficient data loading
 
 5. **Main Application**: `main.py`
    - Command-line interface for the system
-   - Handles training, inference, and visualization
+   - Supports training, inference, and visualization
+   - Handles multiple pattern fitting and optimization
 
 ### Deep Learning Models
 
@@ -184,7 +191,7 @@ mypy .
 3. **Feature Extraction**: EfficientNet extracts features
 4. **Cloth Type Classification**: Identifies material type
 5. **Semantic Segmentation**: U-Net generates pixel-level cloth masks
-6. **Contour Detection**: OpenCV processes edges and contours
+6. **Contour Detection**: OpenCV processes edges and contours using adaptive thresholding
 7. **Output**: Cloth properties, dimensions, and contour information
 
 ### Pattern Fitting Pipeline
@@ -213,7 +220,7 @@ This project builds on several research papers:
 
 ## Future Development
 
-- **Advanced Reinforcement Learning**: Implement more sophisticated RL algorithms like PPO or SAC for pattern fitting
+- **Advanced Reinforcement Learning**: Implement more sophisticated RL algorithms like SAC for pattern fitting
 - **Multi-Objective Optimization**: Balance material utilization with other constraints like fabric grain direction
 - **Material-Specific Adjustments**: Adapting pattern placement based on cloth properties
 - **Interactive UI**: User interface for manual adjustments to generated layouts
