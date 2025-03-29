@@ -11,7 +11,8 @@ Cutting Edge is a computer vision system that analyzes garment patterns and clot
 - **Pattern Recognition**: Identifies pattern types from images
 - **Cloth Material Analysis**: Analyzes cloth properties and contours
 - **Dimension Estimation**: Extracts accurate dimensions for both patterns and cloth
-- **Smart Placement**: (Planned feature) Automatically suggests optimal pattern placement
+- **Pattern Fitting**: Optimizes pattern placement on cloth using Hierarchical Reinforcement Learning
+- **Material Utilization**: Maximizes cloth utilization and minimizes waste
 
 ## How It Works
 
@@ -37,7 +38,18 @@ The Cloth Recognition Module analyzes cloth materials using:
 
 ![Cloth Analysis](https://via.placeholder.com/600x300?text=Cloth+Analysis+Process)
 
-### 3. Dataset System
+### 3. Pattern Fitting Module
+
+The Pattern Fitting Module optimizes pattern placement on cloth materials using Hierarchical Reinforcement Learning (HRL):
+
+- **Manager Network**: Determines optimal pattern placement sequence
+- **Worker Network**: Determines optimal position and rotation for each pattern
+- **Reward System**: Optimizes for material utilization, compactness, and edge usage
+- **Visualization**: Provides visual representation of optimized pattern layouts
+
+![Pattern Fitting](https://via.placeholder.com/600x300?text=Pattern+Fitting+Process)
+
+### 4. Dataset System
 
 The system works with the GarmentCodeData dataset, which includes:
 
@@ -58,12 +70,17 @@ The system works with the GarmentCodeData dataset, which includes:
    - Uses EfficientNet and U-Net architectures
    - Combines deep learning with traditional computer vision techniques
 
-3. **Dataset Handling**: `dataset.py`
+3. **Pattern Fitting Module**: `pattern_fitting_module.py`
+   - Implements Hierarchical Reinforcement Learning for pattern placement
+   - Uses manager-worker architecture for sequential decision-making
+   - Optimizes for material utilization and waste reduction
+
+4. **Dataset Handling**: `dataset.py`
    - Loads and preprocesses the GarmentCodeData dataset
    - Handles train/validation/test splits
    - Transforms data for model training
 
-4. **Main Application**: `main.py`
+5. **Main Application**: `main.py`
    - Command-line interface for the system
    - Handles training, inference, and visualization
 
@@ -75,6 +92,7 @@ The system uses several state-of-the-art deep learning architectures:
 - **LSTM**: Long Short-Term Memory network for sequence modeling (corner detection)
 - **EfficientNet-B0**: Lightweight but powerful CNN for cloth classification
 - **U-Net**: Encoder-decoder architecture with skip connections for semantic segmentation
+- **Hierarchical RL**: Two-level reinforcement learning architecture with manager and worker networks
 
 ## Installation
 
@@ -109,7 +127,14 @@ python -m cutting_edge.main --dataset_path /path/to/garment_data --train --epoch
 ### Inference
 
 ```bash
-python -m cutting_edge.main --model_path models/pattern_recognition_model.pth --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg
+# Basic pattern and cloth recognition
+python -m cutting_edge.main --pattern_model_path models/pattern_recognition_model.pth --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg
+
+# Pattern fitting with optimization
+python -m cutting_edge.main --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg --fitting_model_path models/pattern_fitting_model.pth
+
+# Multiple pattern fitting with visualization
+python -m cutting_edge.main --pattern_dir path/to/patterns/ --cloth_image path/to/cloth.jpg --multi_pattern --visualize
 ```
 
 ## Development
@@ -162,6 +187,18 @@ mypy .
 6. **Contour Detection**: OpenCV processes edges and contours
 7. **Output**: Cloth properties, dimensions, and contour information
 
+### Pattern Fitting Pipeline
+
+1. **Input**: Cloth data and pattern data (with contours and dimensions)
+2. **Environment Setup**: Initialize packing environment with cloth space and patterns
+3. **Training**: (If needed) Train the Hierarchical RL model through episodes of pattern placement
+4. **Inference**:
+   - Manager network selects the best pattern to place next
+   - Worker network determines optimal position and rotation
+   - Pattern is placed on the cloth if valid (no overlap, within boundaries)
+   - Process repeats until all patterns are placed or no valid placements remain
+5. **Output**: Final layout, material utilization percentage, and placement details for each pattern
+
 ## Scientific Foundation
 
 This project builds on several research papers:
@@ -171,12 +208,15 @@ This project builds on several research papers:
 - **U-Net**: Ronneberger, O., et al. (2015). "U-Net: Convolutional Networks for Biomedical Image Segmentation." <https://arxiv.org/abs/1505.04597>
 - **GarmentCode**: Korosteleva, J. & Lee, S. (2021). "GarmentCode: Physics-based automatic patterning of 3D garment models." <https://doi.org/10.1145/3478513.3480489>
 - **GarmentCodeData**: Korosteleva, J., et al. (2024). "GarmentCodeData: A Dataset of 3D Made-to-Measure Garments with Sewing Patterns." ECCV 2024.
+- **Hierarchical RL**: Wang, X., et al. (2022). "Planning Irregular Object Packing via Hierarchical Reinforcement Learning." Mathematics 2022, 10, 327.
+- **Tree Search + RL**: Zhang, Y., et al. (2023). "Tree Search Reinforcement Learning for Two-Dimensional Cutting Stock Problem With Complex Constraints." IEEE Transactions on Cybernetics, 53(9), 5320-5332.
 
 ## Future Development
 
-- **Pattern Placement Optimization**: Algorithmic placement of patterns on cloth to minimize waste
-- **Multi-Pattern Layout**: Handling multiple patterns on a single cloth piece
+- **Advanced Reinforcement Learning**: Implement more sophisticated RL algorithms like PPO or SAC for pattern fitting
+- **Multi-Objective Optimization**: Balance material utilization with other constraints like fabric grain direction
 - **Material-Specific Adjustments**: Adapting pattern placement based on cloth properties
+- **Interactive UI**: User interface for manual adjustments to generated layouts
 - **3D Visualization**: Providing 3D preview of the final garment
 
 ## Contributing

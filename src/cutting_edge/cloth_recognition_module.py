@@ -2,26 +2,26 @@ from typing import Dict
 
 import cv2
 import numpy as np
+import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import segmentation_models_pytorch as smp
 import torchvision.transforms as transforms
 
 
 class ClothRecognitionModule:
     """Module for cloth material recognition and dimension mapping
-    
+
     This module analyzes cloth materials in images to identify properties such as:
     - Cloth type classification (e.g., cotton, silk, denim)
     - Semantic segmentation of cloth regions
     - Dimension estimation
-    
+
     The architecture uses multiple specialized networks:
     1. EfficientNet-B0 for cloth type classification
     2. U-Net with ResNet34 backbone for semantic segmentation
     3. Custom MLP for dimension mapping
-    
+
     References:
     - EfficientNet: "EfficientNet: Rethinking Model Scaling for CNNs" (Tan & Le, 2019)
       https://arxiv.org/abs/1905.11946
@@ -31,9 +31,11 @@ class ClothRecognitionModule:
       https://github.com/qubvel/segmentation_models.pytorch
     """
 
-    def __init__(self, num_cloth_types=10, encoder_name="resnet34", encoder_weights="imagenet"):
+    def __init__(
+        self, num_cloth_types=10, encoder_name="resnet34", encoder_weights="imagenet"
+    ):
         """Initialize the cloth recognition module
-        
+
         Args:
             num_cloth_types: Number of cloth material types to classify
             encoder_name: Name of encoder backbone for U-Net (default: "resnet34")
@@ -46,7 +48,9 @@ class ClothRecognitionModule:
         # EfficientNet achieves better accuracy with fewer parameters than other CNNs
         # REF: "EfficientNet: Rethinking Model Scaling for CNNs" (Tan & Le, 2019)
         # https://arxiv.org/abs/1905.11946
-        self.efficientnet = models.efficientnet_b0(pretrained=True)  # Pretrained on ImageNet-1k
+        self.efficientnet = models.efficientnet_b0(
+            pretrained=True
+        )  # Pretrained on ImageNet-1k
 
         # Modify the classifier head to output the correct number of cloth types
         # The original outputs 1000 classes (ImageNet), we change it to num_cloth_types
@@ -60,18 +64,18 @@ class ClothRecognitionModule:
         # REF: "U-Net: Convolutional Networks for Biomedical Image Segmentation"
         # https://arxiv.org/abs/1505.04597
         self.semantic_segmenter = smp.Unet(
-            encoder_name=encoder_name,       # ResNet34 provides good accuracy/speed balance
-            encoder_weights=encoder_weights, # Using ImageNet pretrained weights
-            in_channels=3,                   # RGB input images
-            classes=num_cloth_types,         # Output channels match cloth types
+            encoder_name=encoder_name,  # ResNet34 provides good accuracy/speed balance
+            encoder_weights=encoder_weights,  # Using ImageNet pretrained weights
+            in_channels=3,  # RGB input images
+            classes=num_cloth_types,  # Output channels match cloth types
         ).to(self.device)
 
         # Dimension mapping network (MLP) for estimating cloth dimensions
         # Takes EfficientNet features (1000-dim) and predicts width/height (2-dim)
         self.dim_mapper = nn.Sequential(
             nn.Linear(1000, 512),  # First layer reduces features to 512 dimensions
-            nn.ReLU(),             # ReLU activation for non-linearity
-            nn.Linear(512, 2),     # Final layer outputs width and height
+            nn.ReLU(),  # ReLU activation for non-linearity
+            nn.Linear(512, 2),  # Final layer outputs width and height
         )
 
         # Move models to the computation device (GPU/CPU)
@@ -84,16 +88,16 @@ class ClothRecognitionModule:
 
     def process_cloth(self, image: np.ndarray) -> Dict:
         """Process cloth image and extract material properties
-        
+
         This method analyzes a cloth image to determine its properties using
         both deep learning models and traditional computer vision techniques.
-        
+
         Args:
             image: Input cloth image as numpy array (BGR format from OpenCV)
-            
+
         Returns:
             Dictionary containing cloth analysis results (features, dimensions, contours, etc.)
-            
+
         Raises:
             ValueError: If input image is None
         """
@@ -160,7 +164,9 @@ class ClothRecognitionModule:
             # Filter small contours that likely represent noise
             # Contours smaller than 100 pixels in area are considered noise
             min_contour_area = 100  # Minimum area threshold in square pixels
-            filtered_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
+            filtered_contours = [
+                c for c in contours if cv2.contourArea(c) > min_contour_area
+            ]
 
             # Calculate total cloth area by summing contour areas
             total_area = 0
@@ -168,17 +174,21 @@ class ClothRecognitionModule:
                 total_area += cv2.contourArea(contour)
 
             # Log analysis results for debugging
-            print(f"Cloth analysis complete: Found {len(filtered_contours)} significant contours")
-            print(f"Cloth dimensions: {dimensions}, Total area: {total_area} square pixels")
+            print(
+                f"Cloth analysis complete: Found {len(filtered_contours)} significant contours"
+            )
+            print(
+                f"Cloth dimensions: {dimensions}, Total area: {total_area} square pixels"
+            )
 
             # Return comprehensive analysis results
             return {
-                "features": features.cpu().numpy(),         # Neural network features
-                "contours": filtered_contours,            # Detected cloth contours
-                "dimensions": dimensions,                 # Estimated dimensions (width, height)
-                "edges": edges,                          # Edge detection result
+                "features": features.cpu().numpy(),  # Neural network features
+                "contours": filtered_contours,  # Detected cloth contours
+                "dimensions": dimensions,  # Estimated dimensions (width, height)
+                "edges": edges,  # Edge detection result
                 "segmented_image": segmented_image.cpu().numpy(),  # Semantic segmentation
-                "area": total_area                       # Total cloth area in square pixels
+                "area": total_area,  # Total cloth area in square pixels
             }
 
         except Exception as e:
@@ -206,12 +216,12 @@ class ClothRecognitionModule:
 
             # Return basic analysis with error information
             return {
-                "features": None,              # No neural features available
-                "contours": contours,        # Basic contours from Canny
-                "dimensions": dimensions,    # Estimated dimensions
-                "edges": edges,              # Basic edge detection result
-                "segmented_image": None,     # No segmentation available
-                "error": str(e)              # Error message for debugging
+                "features": None,  # No neural features available
+                "contours": contours,  # Basic contours from Canny
+                "dimensions": dimensions,  # Estimated dimensions
+                "edges": edges,  # Basic edge detection result
+                "segmented_image": None,  # No segmentation available
+                "error": str(e),  # Error message for debugging
             }
 
     def preprocess_image(self, image: np.ndarray) -> torch.Tensor:

@@ -1,1 +1,3 @@
-import sys; print("Venv works! Using:", sys.executable)
+import sys
+
+print("Venv works! Using:", sys.executable)
