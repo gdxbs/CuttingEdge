@@ -880,6 +880,11 @@ class HierarchicalRL:
         if not self.env.available_patterns:
             return None  # No patterns available
 
+        # Ensure sequence_probs is a numpy array
+        if isinstance(sequence_probs, (int, float)):
+            # If it's a scalar, convert to array
+            sequence_probs = np.array([sequence_probs])
+            
         if np.random.random() < epsilon:
             # Explore: choose a random available pattern
             return np.random.choice(self.env.available_patterns)
@@ -889,6 +894,10 @@ class HierarchicalRL:
             if not valid_actions:
                 return None  # No valid actions
 
+            # Check if we have a single-dimension array or scalar
+            if sequence_probs.ndim == 0 or (len(sequence_probs) == 1 and len(valid_actions) == 1):
+                return valid_actions[0]  # Only one pattern, return the only valid action
+                
             # Filter probabilities for valid actions
             valid_probs = sequence_probs[valid_actions]
 

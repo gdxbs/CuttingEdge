@@ -58,12 +58,12 @@ def parse_arguments() -> argparse.Namespace:
         "--train_fitting", action="store_true", help="Train the pattern fitting model"
     )
     parser.add_argument(
-        "--epochs", type=int, default=50, help="Number of training epochs"
+        "--epochs", type=int, default=1, help="Number of training epochs"
     )
     parser.add_argument(
         "--fitting_episodes",
         type=int,
-        default=100,
+        default=1,
         help="Number of fitting training episodes",
     )
 
