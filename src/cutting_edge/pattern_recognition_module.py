@@ -32,11 +32,11 @@ class PatternCNN(nn.Module):
 
     def forward(self, x):
         # Get features from ResNet
-        x = self.features(x)  # Should be [batch_size, 2048, 1, 1]
-        x = torch.flatten(x, 1)  # Flatten to [batch_size, 2048]
+        features = self.features(x)  # Should be [batch_size, 2048, 1, 1]
+        features_flat = torch.flatten(features, 1)  # Flatten to [batch_size, 2048]
         # Pass through FC layer
-        x = self.fc(x)
-        return x
+        x = self.fc(features_flat)
+        return x, features_flat
 
 
 class PatternRecognitionModule:
@@ -76,7 +76,8 @@ class PatternRecognitionModule:
         # hierarchical features while addressing the vanishing gradient problem
         # REF: "Deep Residual Learning for Image Recognition" (He et al., 2016)
         # https://arxiv.org/abs/1512.03385
-        self.cnn = models.resnet50(pretrained=True)
+        # Initialize with 1 class as default (will be updated in _initialize_dataset if dataset provided)
+        self.cnn = PatternCNN(num_classes=1, pretrained=True)
 
         # LSTM for corner detection (sequence modeling of pattern structure)
         # Bidirectional LSTM processes feature sequences to detect pattern corners
@@ -311,7 +312,7 @@ class PatternRecognitionModule:
                 images = batch["image"].to(self.device)
                 labels = batch["label"].to(self.device)
 
-                outputs = self.cnn(images)
+                outputs, _ = self.cnn(images)
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
@@ -325,7 +326,9 @@ class PatternRecognitionModule:
             [
                 transforms.ToPILImage(),
                 transforms.Resize((512, 512)),
-                transforms.Grayscale(num_output_channels=1),
+                transforms.Grayscale(
+                    num_output_channels=3
+                ),  # Convert to 3 channels to match ResNet input
                 transforms.ToTensor(),
             ]
         )
@@ -352,6 +355,14 @@ class PatternRecognitionModule:
             # Check if contour points align with detected corners
             if self._validate_contour_with_corners(contour, corners):
                 refined_contours.append(contour)
+
+        # If no contours were found or none passed validation, create a simple rectangular contour
+        if not refined_contours:
+            h, w = image.shape[:2]
+            simple_contour = np.array(
+                [[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32
+            )
+            refined_contours = [simple_contour]
 
         return refined_contours
 
@@ -436,13 +447,12 @@ class PatternRecognitionModule:
         with torch.no_grad():
             try:
                 # Get features
-                features = self.cnn(processed_image)
+                class_output, features = self.cnn(processed_image)
 
                 # Get pattern type if trained with dataset
                 if hasattr(self, "train_dataset") and hasattr(
                     self.train_dataset, "pattern_types"
                 ):
-                    class_output = self.cnn.fc(features)
                     pattern_type = torch.argmax(class_output, dim=1).item()
                     pattern_type_name = self.train_dataset.pattern_types[pattern_type]
                 else:
@@ -489,6 +499,17 @@ class PatternRecognitionModule:
                 contours, _ = cv2.findContours(
                     edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                 )
+
+                # Check if contours are empty and create a minimal contour if needed
+                if len(contours) == 0:
+                    print(
+                        "No contours found in pattern, creating a simple rectangular contour"
+                    )
+                    h, w = pattern_image_copy.shape[:2]
+                    simple_contour = np.array(
+                        [[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32
+                    )
+                    contours = [simple_contour]
 
                 # Get basic dimensions
                 dimensions = self.extract_dimensions(pattern_image_copy)

@@ -71,9 +71,13 @@ class ClothRecognitionModule:
         ).to(self.device)
 
         # Dimension mapping network (MLP) for estimating cloth dimensions
-        # Takes EfficientNet features (1000-dim) and predicts width/height (2-dim)
+        # EfficientNet-B0 feature extractor outputs 1280-dim features
+        # This is the standard size for EfficientNet-B0's features after pooling
+        efficientnet_features = 1280  # Fixed size for EfficientNet-B0
+
+        # Takes EfficientNet features and predicts width/height (2-dim)
         self.dim_mapper = nn.Sequential(
-            nn.Linear(1000, 512),  # First layer reduces features to 512 dimensions
+            nn.Linear(efficientnet_features, 512),  # First layer reduces features
             nn.ReLU(),  # ReLU activation for non-linearity
             nn.Linear(512, 2),  # Final layer outputs width and height
         )
@@ -117,10 +121,25 @@ class ClothRecognitionModule:
             processed_image = self.preprocess_image(image_copy)
 
             with torch.no_grad():  # Disable gradient calculation for inference
-                # Extract features using EfficientNet
-                features = self.efficientnet(processed_image)
+                # Extract features from EfficientNet features extractor (the model before the classifier)
+                # Use the features before the final classification layer
+                # This approach gets the full feature representation from the model
 
-                # Predict cloth dimensions using MLP
+                # Get features from the EfficientNet backbone
+                x = processed_image
+
+                # Forward pass through the EfficientNet layers before the classifier
+                # This is based on EfficientNet's implementation in torchvision
+                x = self.efficientnet.features(x)
+
+                # Apply the same operations as in EfficientNet's forward method
+                # Global pooling to get a fixed-size representation
+                x = self.efficientnet.avgpool(x)
+
+                # Flatten to 1D feature vector for the linear layer
+                features = torch.flatten(x, 1)
+
+                # Now we have proper feature vectors suitable for our dimension prediction
                 dimensions = self.dim_mapper(features).cpu().numpy()[0]
 
                 # Generate semantic segmentation mask

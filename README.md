@@ -128,7 +128,11 @@ deactivate
 ### Training
 
 ```bash
+# Train pattern recognition model
 python -m cutting_edge.main --dataset_path /path/to/garment_data --train --epochs 50
+
+# Train pattern fitting model
+python -m cutting_edge.main --train_fitting --fitting_episodes 100 --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg
 ```
 
 ### Inference
@@ -142,6 +146,9 @@ python -m cutting_edge.main --pattern_image path/to/pattern.jpg --cloth_image pa
 
 # Multiple pattern fitting with visualization
 python -m cutting_edge.main --pattern_dir path/to/patterns/ --cloth_image path/to/cloth.jpg --multi_pattern --visualize
+
+# Specify output directory for visualizations
+python -m cutting_edge.main --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg --visualize --output_dir custom_output
 ```
 
 ## Development
