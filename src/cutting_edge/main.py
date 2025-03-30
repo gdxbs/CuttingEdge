@@ -306,6 +306,7 @@ def process_cloth_image(
     """Process cloth image and visualize results."""
     # Initialize cloth recognition module
     logger.info("Initializing cloth recognition module...")
+    # You might need to pass model paths or configs here if they are not hardcoded
     cloth_recognizer = ClothRecognitionModule()
 
     # Check if file exists
@@ -319,15 +320,26 @@ def process_cloth_image(
         logger.error(f"Failed to load cloth image: {args.cloth_image}")
         return None, None
 
-    # Convert BGR to RGB for display
-    cloth_image_rgb = cv2.cvtColor(cloth_image, cv2.COLOR_BGR2RGB)
+    # Process the cloth image
     cloth_data = cloth_recognizer.process_cloth(cloth_image)
 
-    logger.info(f"Cloth dimensions: {cloth_data['dimensions']}")
+    if cloth_data.get("error"):
+        logger.error(f"Processing failed with error: {cloth_data['error']}")
+        # Decide if you want to return partial data or None
+        # return None, None # Option 1: Return nothing on error
+        # Option 2: Return partial data (current behavior)
+
+    # Log dimensions (use the final dimensions from cloth_data)
+    logger.info(f"Cloth dimensions (WxH): {cloth_data['dimensions']}")
+    logger.info(f"Cloth area (pixels): {cloth_data['area']:.2f}")
+
+
+    # Convert BGR to RGB for display *after* processing
+    cloth_image_rgb = cv2.cvtColor(cloth_image, cv2.COLOR_BGR2RGB)
 
     # Visualize cloth results
     visualize_cloth_results(
-        cloth_image_rgb, cloth_data, args.output_dir, args.train_fitting
+        cloth_image_rgb, cloth_data, args.output_dir, args.train_fitting # Use skip_show from args
     )
 
     return cloth_data, cloth_image_rgb
@@ -340,6 +352,7 @@ def visualize_cloth_results(
     skip_show: bool = False,
 ) -> None:
     """Visualize cloth recognition results with enhanced mask visualization."""
+    os.makedirs(output_dir, exist_ok=True) # Ensure output directory exists
     plt.figure(figsize=(15, 10))
     
     # Original image
@@ -347,36 +360,52 @@ def visualize_cloth_results(
     plt.imshow(cloth_image_rgb)
     plt.title("Input Cloth")
 
-    # Edge detection
+    # Edge detection - Should look better now if mask is good
     plt.subplot(232)
-    plt.imshow(cloth_data["edges"], cmap="gray")
-    plt.title("Cloth Edges")
+    if cloth_data.get("edges") is not None:
+        plt.imshow(cloth_data["edges"], cmap="gray")
+    plt.title("Cloth Edges (from Mask)")
 
     # Contours on the original image
-    if "contours" in cloth_data and cloth_data["contours"]:
-        contour_img = cloth_image_rgb.copy()
+    contour_img = cloth_image_rgb.copy()
+    if cloth_data.get("contours"): # Check if list is not empty
         cv2.drawContours(contour_img, cloth_data["contours"], -1, (0, 255, 0), 2)
-        plt.subplot(233)
-        plt.imshow(contour_img)
-        plt.title("Cloth Contours")
-    
-    # Add mask visualization if available
-    if "cloth_mask" in cloth_data and cloth_data["cloth_mask"] is not None:
-        plt.subplot(234)
+    plt.subplot(233)
+    plt.imshow(contour_img)
+    plt.title("Cloth Contours (Largest)")
+
+    # Cloth Mask - Should now show the white cloth area
+    plt.subplot(234)
+    if cloth_data.get("cloth_mask") is not None:
         plt.imshow(cloth_data["cloth_mask"], cmap="gray")
-        plt.title("Cloth Mask")
+    plt.title("Cloth Mask (Thresholded & Cleaned)")
     
+    # Placeholder for 5th plot if needed, or leave empty
+    plt.subplot(235)
+    plt.axis('off') # Hide axes if unused
+    plt.title("Empty")
+
     # Show segmentation if available
-    if "segmented_image" in cloth_data and cloth_data["segmented_image"] is not None:
-        plt.subplot(236)
-        plt.imshow(cloth_data["segmented_image"].squeeze(), cmap="viridis")
+    plt.subplot(236)
+    if cloth_data.get("segmented_image") is not None:
+        # Squeeze might be needed depending on how segmentation map is stored
+        seg_img = cloth_data["segmented_image"]
+        if seg_img.ndim == 3 and seg_img.shape[0] == 1: # Handle potential channel dim
+             seg_img = seg_img.squeeze(0)
+        plt.imshow(seg_img, cmap="viridis") # Adjust cmap as needed
+        plt.title("Semantic Segmentation")
+    else:
+        plt.text(0.5, 0.5, 'Segmentation N/A', horizontalalignment='center', verticalalignment='center')
         plt.title("Semantic Segmentation")
 
+
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "cloth_detection.png"))
+    save_path = os.path.join(output_dir, "cloth_detection_results.png")
+    plt.savefig(save_path)
+    logger.info(f"Visualization saved to: {save_path}")
     if not skip_show:
         plt.show()
-
+    plt.close() # Close the figure to free memory
 
 def fit_patterns_to_cloth(
     args: argparse.Namespace,
