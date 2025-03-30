@@ -336,35 +336,57 @@ class PatternRecognitionModule:
         return transform(image)
 
     def _extract_contours(self, image: np.ndarray, corners: np.ndarray) -> List:
-        """Extract contours using corner information"""
-
+        """Extract contours focusing on the actual pattern area
+        
+        Streamlined implementation that uses multiple detection methods in priority order:
+        1. Binary thresholding with morphological cleanup
+        2. Corner-based contour creation (if corners available)
+        3. Rectangle fallback if no other methods succeed
+        """
         # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Edge detection
-        edges = cv2.Canny(gray, 50, 150)
+        # Apply thresholding to isolate the pattern from background
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Alternative approach with adaptive thresholding if Otsu doesn't work well
+        if np.sum(binary) < 100:  # If very few white pixels, try adaptive thresholding
+            binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY_INV, 11, 2)
+
+        # Morphological operations to clean up the binary image (combined operation)
+        kernel = np.ones((3, 3), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)  # Close operation handles both open and close
 
         # Find contours
         contours, _ = cv2.findContours(
-            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
-        # Refine contours using corner information
-        refined_contours = []
-        for contour in contours:
-            # Check if contour points align with detected corners
-            if self._validate_contour_with_corners(contour, corners):
-                refined_contours.append(contour)
+        # Filter small contours that are likely noise
+        min_contour_area = 100  # Minimum area threshold
+        filtered_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
+        
+        # If multiple contours were found, select the largest one as the main pattern
+        if filtered_contours:
+            main_contour = max(filtered_contours, key=cv2.contourArea)
+            return [main_contour]
 
-        # If no contours were found or none passed validation, create a simple rectangular contour
-        if not refined_contours:
-            h, w = image.shape[:2]
-            simple_contour = np.array(
-                [[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32
-            )
-            refined_contours = [simple_contour]
-
-        return refined_contours
+        # If binary thresholding failed, try using corners if available
+        if corners is not None and len(corners) > 0:
+            try:
+                corners_array = np.array(corners).reshape(-1, 2)
+                if len(corners_array) >= 4:
+                    # Use convex hull to create a contour from corners
+                    hull = cv2.convexHull(corners_array.astype(np.float32))
+                    return [hull]
+            except Exception as e:
+                print(f"Error creating contour from corners: {e}")
+                
+        # Last resort: create a simple rectangular contour from image dimensions
+        h, w = image.shape[:2]
+        simple_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32)
+        return [simple_contour]
 
     def extract_dimensions(self, image: np.ndarray, corners=None) -> torch.Tensor:
         """Extract dimensions using corner locations or image properties"""

@@ -95,7 +95,7 @@ class ClothRecognitionModule:
 
         This method analyzes a cloth image to determine its properties using
         both deep learning models and traditional computer vision techniques.
-
+        
         Args:
             image: Input cloth image as numpy array (BGR format from OpenCV)
 
@@ -121,126 +121,132 @@ class ClothRecognitionModule:
             processed_image = self.preprocess_image(image_copy)
 
             with torch.no_grad():  # Disable gradient calculation for inference
-                # Extract features from EfficientNet features extractor (the model before the classifier)
-                # Use the features before the final classification layer
-                # This approach gets the full feature representation from the model
-
                 # Get features from the EfficientNet backbone
-                x = processed_image
-
-                # Forward pass through the EfficientNet layers before the classifier
-                # This is based on EfficientNet's implementation in torchvision
-                x = self.efficientnet.features(x)
-
-                # Apply the same operations as in EfficientNet's forward method
-                # Global pooling to get a fixed-size representation
+                x = self.efficientnet.features(processed_image)
+                
+                # Global pooling and flatten
                 x = self.efficientnet.avgpool(x)
-
-                # Flatten to 1D feature vector for the linear layer
                 features = torch.flatten(x, 1)
 
-                # Now we have proper feature vectors suitable for our dimension prediction
+                # Predict dimensions
                 dimensions = self.dim_mapper(features).cpu().numpy()[0]
 
                 # Generate semantic segmentation mask
                 segmented_image = self.semantic_segment(processed_image)
 
-            # Traditional computer vision processing for contour detection
-            # This approach is more robust for detecting cloth boundaries
-            # Convert to grayscale for edge detection
-            gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
-
-            # Apply Gaussian blur to reduce noise (5x5 kernel)
-            # This helps improve edge detection by reducing image noise
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-            # Use adaptive thresholding for better edge detection on various fabric textures
-            # Adaptive threshold adjusts according to local image regions, which works better
-            # for cloth materials with varying textures and lighting conditions
-            # Parameters: (src, maxValue, adaptiveMethod, thresholdType, blockSize, C)
-            # REF: https://docs.opencv.org/3.4/d7/d1b/group__imgproc__misc.html#ga72b913f352e4a1b1b397736707afcde3
-            thresh = cv2.adaptiveThreshold(
-                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+            # Cloth detection using a unified approach
+            # Start with color-based segmentation (most reliable)
+            hsv = cv2.cvtColor(image_copy, cv2.COLOR_BGR2HSV)
+            
+            # Use saturation and value for cloth detection
+            sat = hsv[:, :, 1]
+            val = hsv[:, :, 2]
+            
+            # Create a primary mask using color information
+            cloth_mask = cv2.bitwise_and(
+                cv2.inRange(sat, 20, 255),  # Saturation mask (exclude very unsaturated)
+                cv2.inRange(val, 50, 255)   # Value mask (exclude very dark areas)
             )
+            
+            # Fallback to adaptive thresholding if color-based approach didn't find much
+            if np.sum(cloth_mask) < 0.05 * cloth_mask.size:
+                gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
+                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+                cloth_mask = cv2.adaptiveThreshold(
+                    blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                )
+            
+            # Clean up the mask with morphological operations
+            kernel = np.ones((5, 5), np.uint8)
+            cloth_mask = cv2.morphologyEx(cloth_mask, cv2.MORPH_CLOSE, kernel)
+            
+            # Find edges
+            edges = cv2.Canny(cloth_mask, 50, 150)
 
-            # Edge detection using Canny algorithm
-            # Threshold values 100, 200 provide a good balance for cloth edges
-            # REF: "A Computational Approach to Edge Detection" (Canny, 1986)
-            edges = cv2.Canny(thresh, 100, 200)
-
-            # Dilate edges to connect broken contours
-            # This helps create continuous boundaries for contour detection
-            kernel = np.ones((3, 3), np.uint8)  # 3x3 structuring element
-            dilated_edges = cv2.dilate(edges, kernel, iterations=1)
-
-            # Find contours in the processed edge map
-            # RETR_EXTERNAL retrieves only the outermost contours
-            # CHAIN_APPROX_SIMPLE compresses horizontal, vertical, and diagonal segments
+            # Find contours and select the main cloth area
             contours, _ = cv2.findContours(
-                dilated_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                cloth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
 
-            # Filter small contours that likely represent noise
-            # Contours smaller than 100 pixels in area are considered noise
-            min_contour_area = 100  # Minimum area threshold in square pixels
-            filtered_contours = [
-                c for c in contours if cv2.contourArea(c) > min_contour_area
-            ]
+            # Filter small contours
+            min_contour_area = 500
+            filtered_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
+            
+            # Process contours and extract information
+            if filtered_contours:
+                # Use the largest contour as the main cloth
+                main_contour = max(filtered_contours, key=cv2.contourArea)
+                filtered_contours = [main_contour]
+                
+                # Create a mask with just the main cloth area
+                cloth_area_mask = np.zeros_like(cloth_mask)
+                cv2.drawContours(cloth_area_mask, filtered_contours, -1, 255, -1)
+                
+                # Calculate cloth area
+                total_area = cv2.contourArea(filtered_contours[0])
+                
+                # Get dimensions from the contour
+                x, y, w, h = cv2.boundingRect(filtered_contours[0])
+                contour_dimensions = np.array([w, h], dtype=np.float32)
+                
+                # Use contour dimensions if they're reasonable, otherwise use model predictions
+                if w > 10 and h > 10:
+                    dimensions = contour_dimensions
+            else:
+                # No significant contours found, use the whole image
+                h, w = image_copy.shape[:2]
+                cloth_area_mask = np.ones_like(cloth_mask)
+                filtered_contours = []
+                total_area = w * h
 
-            # Calculate total cloth area by summing contour areas
-            total_area = 0
-            for contour in filtered_contours:
-                total_area += cv2.contourArea(contour)
-
-            # Log analysis results for debugging
-            print(
-                f"Cloth analysis complete: Found {len(filtered_contours)} significant contours"
-            )
-            print(
-                f"Cloth dimensions: {dimensions}, Total area: {total_area} square pixels"
-            )
-
-            # Return comprehensive analysis results
+            # Return analysis results
             return {
-                "features": features.cpu().numpy(),  # Neural network features
-                "contours": filtered_contours,  # Detected cloth contours
-                "dimensions": dimensions,  # Estimated dimensions (width, height)
-                "edges": edges,  # Edge detection result
-                "segmented_image": segmented_image.cpu().numpy(),  # Semantic segmentation
-                "area": total_area,  # Total cloth area in square pixels
+                "features": features.cpu().numpy(),
+                "contours": filtered_contours,
+                "dimensions": dimensions,
+                "edges": edges,
+                "segmented_image": segmented_image.cpu().numpy(),
+                "area": total_area,
+                "cloth_mask": cloth_area_mask,
             }
 
         except Exception as e:
-            # Error handling with fallback to traditional CV methods
+            # Fallback to basic image processing if deep learning fails
             print(f"Error during cloth processing: {e}")
-
-            # Fallback using basic contour detection when deep learning fails
-            # This ensures we still provide useful results even if models fail
+            
+            # Basic contour detection
             gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 100, 200)  # Standard Canny edge parameters
+            edges = cv2.Canny(gray, 100, 200)
             contours, _ = cv2.findContours(
                 edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
 
-            # Estimate dimensions based on contour bounding box or image size
+            # Process contours
             if contours:
-                # Use the largest contour (by area) to determine cloth dimensions
                 largest_contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(largest_contour)  # Get bounding rectangle
-                dimensions = np.array([w, h], dtype=np.float32)  # Width and height
-            else:
-                # If no contours found, use the entire image dimensions as fallback
-                h, w = image_copy.shape[:2]  # Image height and width
+                x, y, w, h = cv2.boundingRect(largest_contour)
                 dimensions = np.array([w, h], dtype=np.float32)
+                
+                cloth_mask = np.zeros_like(gray)
+                cv2.drawContours(cloth_mask, [largest_contour], -1, 255, -1)
+                
+                total_area = cv2.contourArea(largest_contour)
+            else:
+                h, w = image_copy.shape[:2]
+                dimensions = np.array([w, h], dtype=np.float32)
+                cloth_mask = np.ones_like(gray) * 255
+                total_area = w * h
 
-            # Return basic analysis with error information
+            # Return simplified results
             return {
-                "features": None,  # No neural features available
-                "contours": contours,  # Basic contours from Canny
-                "dimensions": dimensions,  # Estimated dimensions
-                "edges": edges,  # Basic edge detection result
-                "segmented_image": None,  # No segmentation available
-                "error": str(e),  # Error message for debugging
+                "features": None,
+                "contours": contours,
+                "dimensions": dimensions,
+                "edges": edges,
+                "segmented_image": None,
+                "area": total_area,
+                "cloth_mask": cloth_mask,
+                "error": str(e),
             }
 
     def preprocess_image(self, image: np.ndarray) -> torch.Tensor:
