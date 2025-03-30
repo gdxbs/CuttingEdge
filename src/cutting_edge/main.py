@@ -235,7 +235,7 @@ def visualize_pattern_results(
 ) -> None:
     """Visualize pattern recognition results with enhanced visualization."""
     plt.figure(figsize=(15, 10))
-    
+
     # Original image
     plt.subplot(231)
     plt.imshow(pattern_image_rgb)
@@ -248,24 +248,22 @@ def visualize_pattern_results(
         plt.subplot(232)
         plt.imshow(contour_img)
         plt.title("Detected Pattern Contours")
-        
+
         # Create a binary mask of just the pattern area
         pattern_mask = np.zeros(pattern_image_rgb.shape[:2], dtype=np.uint8)
         cv2.drawContours(pattern_mask, pattern_data["contours"], -1, 255, -1)
         plt.subplot(233)
         plt.imshow(pattern_mask, cmap="gray")
         plt.title("Pattern Mask")
-        
+
         # Create an isolated pattern image (just the pattern without background)
         pattern_only = cv2.bitwise_and(
-            pattern_image_rgb,
-            pattern_image_rgb,
-            mask=pattern_mask
+            pattern_image_rgb, pattern_image_rgb, mask=pattern_mask
         )
         plt.subplot(234)
         plt.imshow(pattern_only)
         plt.title("Isolated Pattern")
-        
+
         # Create a filled contour visualization for better clarity
         filled_vis = np.zeros_like(pattern_image_rgb)
         color = (0, 255, 0)  # Green fill
@@ -276,7 +274,7 @@ def visualize_pattern_results(
         plt.subplot(235)
         plt.imshow(overlay)
         plt.title("Pattern Overlay")
-    
+
     # Show additional pattern information
     plt.subplot(236)
     dimensions = pattern_data.get("dimensions", None)
@@ -284,14 +282,18 @@ def visualize_pattern_results(
     info_text = f"Pattern Type: {pattern_type}\n"
     if dimensions is not None:
         info_text += f"Dimensions: {dimensions[0]:.1f} x {dimensions[1]:.1f}"
-    
+
     # Create a text-only subplot with pattern information
-    plt.text(0.5, 0.5, info_text, 
-             horizontalalignment='center',
-             verticalalignment='center',
-             fontsize=12,
-             transform=plt.gca().transAxes)
-    plt.axis('off')
+    plt.text(
+        0.5,
+        0.5,
+        info_text,
+        horizontalalignment="center",
+        verticalalignment="center",
+        fontsize=12,
+        transform=plt.gca().transAxes,
+    )
+    plt.axis("off")
     plt.title("Pattern Information")
 
     plt.tight_layout()
@@ -333,13 +335,15 @@ def process_cloth_image(
     logger.info(f"Cloth dimensions (WxH): {cloth_data['dimensions']}")
     logger.info(f"Cloth area (pixels): {cloth_data['area']:.2f}")
 
-
     # Convert BGR to RGB for display *after* processing
     cloth_image_rgb = cv2.cvtColor(cloth_image, cv2.COLOR_BGR2RGB)
 
     # Visualize cloth results
     visualize_cloth_results(
-        cloth_image_rgb, cloth_data, args.output_dir, args.train_fitting # Use skip_show from args
+        cloth_image_rgb,
+        cloth_data,
+        args.output_dir,
+        args.train_fitting,  # Use skip_show from args
     )
 
     return cloth_data, cloth_image_rgb
@@ -352,9 +356,9 @@ def visualize_cloth_results(
     skip_show: bool = False,
 ) -> None:
     """Visualize cloth recognition results with enhanced mask visualization."""
-    os.makedirs(output_dir, exist_ok=True) # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)  # Ensure output directory exists
     plt.figure(figsize=(15, 10))
-    
+
     # Original image
     plt.subplot(231)
     plt.imshow(cloth_image_rgb)
@@ -368,7 +372,7 @@ def visualize_cloth_results(
 
     # Contours on the original image
     contour_img = cloth_image_rgb.copy()
-    if cloth_data.get("contours"): # Check if list is not empty
+    if cloth_data.get("contours"):  # Check if list is not empty
         cv2.drawContours(contour_img, cloth_data["contours"], -1, (0, 255, 0), 2)
     plt.subplot(233)
     plt.imshow(contour_img)
@@ -379,10 +383,10 @@ def visualize_cloth_results(
     if cloth_data.get("cloth_mask") is not None:
         plt.imshow(cloth_data["cloth_mask"], cmap="gray")
     plt.title("Cloth Mask (Thresholded & Cleaned)")
-    
+
     # Placeholder for 5th plot if needed, or leave empty
     plt.subplot(235)
-    plt.axis('off') # Hide axes if unused
+    plt.axis("off")  # Hide axes if unused
     plt.title("Empty")
 
     # Show segmentation if available
@@ -390,14 +394,19 @@ def visualize_cloth_results(
     if cloth_data.get("segmented_image") is not None:
         # Squeeze might be needed depending on how segmentation map is stored
         seg_img = cloth_data["segmented_image"]
-        if seg_img.ndim == 3 and seg_img.shape[0] == 1: # Handle potential channel dim
-             seg_img = seg_img.squeeze(0)
-        plt.imshow(seg_img, cmap="viridis") # Adjust cmap as needed
+        if seg_img.ndim == 3 and seg_img.shape[0] == 1:  # Handle potential channel dim
+            seg_img = seg_img.squeeze(0)
+        plt.imshow(seg_img, cmap="viridis")  # Adjust cmap as needed
         plt.title("Semantic Segmentation")
     else:
-        plt.text(0.5, 0.5, 'Segmentation N/A', horizontalalignment='center', verticalalignment='center')
+        plt.text(
+            0.5,
+            0.5,
+            "Segmentation N/A",
+            horizontalalignment="center",
+            verticalalignment="center",
+        )
         plt.title("Semantic Segmentation")
-
 
     plt.tight_layout()
     save_path = os.path.join(output_dir, "cloth_detection_results.png")
@@ -405,7 +414,8 @@ def visualize_cloth_results(
     logger.info(f"Visualization saved to: {save_path}")
     if not skip_show:
         plt.show()
-    plt.close() # Close the figure to free memory
+    plt.close()  # Close the figure to free memory
+
 
 def fit_patterns_to_cloth(
     args: argparse.Namespace,

@@ -1,3 +1,4 @@
+import logging
 from typing import Dict
 
 import cv2
@@ -8,10 +9,10 @@ import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-import logging
 # Configure logging to display INFO level messages
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class ClothRecognitionModule:
     """Module for cloth material recognition and dimension mapping
@@ -52,7 +53,9 @@ class ClothRecognitionModule:
         # EfficientNet achieves better accuracy with fewer parameters than other CNNs
         # REF: "EfficientNet: Rethinking Model Scaling for CNNs" (Tan & Le, 2019)
         # https://arxiv.org/abs/1905.11946
-        self.efficientnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1) # Use updated weights API
+        self.efficientnet = models.efficientnet_b0(
+            weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1
+        )  # Use updated weights API
 
         # Modify the classifier head to output the correct number of cloth types
         # The original outputs 1000 classes (ImageNet), we change it to num_cloth_types
@@ -74,7 +77,7 @@ class ClothRecognitionModule:
         # Dimension mapping network (MLP) for estimating cloth dimensions
         # EfficientNet-B0 feature extractor outputs 1280-dim features
         # This is the standard size for EfficientNet-B0's features after pooling
-        efficientnet_features = num_ftrs # Use the actual feature size
+        efficientnet_features = num_ftrs  # Use the actual feature size
 
         # Takes EfficientNet features and predicts width/height (2-dim)
         self.dim_mapper = nn.Sequential(
@@ -89,7 +92,7 @@ class ClothRecognitionModule:
 
         # Set models to evaluation mode (disables dropout, uses running stats for batchnorm)
         self.efficientnet.eval()
-        self.semantic_segmenter.eval() # Ensure segmenter is also in eval mode
+        self.semantic_segmenter.eval()  # Ensure segmenter is also in eval mode
         self.dim_mapper.eval()
 
     def process_cloth(self, image: np.ndarray) -> Dict:
@@ -97,7 +100,7 @@ class ClothRecognitionModule:
 
         This method analyzes a cloth image to determine its properties using
         both deep learning models and traditional computer vision techniques.
-        
+
         Args:
             image: Input cloth image as numpy array (BGR format from OpenCV)
 
@@ -119,7 +122,7 @@ class ClothRecognitionModule:
             image_copy = cv2.cvtColor(image_copy, cv2.COLOR_GRAY2BGR)
 
         h_orig, w_orig = image_copy.shape[:2]
-        
+
         # --- Initialize default return values ---
         default_dimensions = np.array([w_orig, h_orig], dtype=np.float32)
         results = {
@@ -141,7 +144,7 @@ class ClothRecognitionModule:
             with torch.no_grad():  # Disable gradient calculation for inference
                 # Get features from the EfficientNet backbone
                 x = self.efficientnet.features(processed_image)
-                
+
                 # Global pooling and flatten
                 x = self.efficientnet.avgpool(x)
                 features = torch.flatten(x, 1)
@@ -151,7 +154,7 @@ class ClothRecognitionModule:
 
                 results["features"] = features.cpu().numpy()
                 # Store predicted dims, might be overwritten by contour dims later
-                results["dimensions"] = predicted_dimensions 
+                results["dimensions"] = predicted_dimensions
 
                 # Semantic Segmentation
                 segmented_output = self.semantic_segment(processed_image)
@@ -159,20 +162,20 @@ class ClothRecognitionModule:
                 # Note: Ensure segmentation output is appropriate (e.g., class indices)
                 # This assumes segmented_output is (1, H_proc, W_proc)
                 if segmented_output is not None:
-                     # Assuming output is class indices, needs conversion for visualization if needed
-                     # Resize back to original image dimensions for consistency
-                     segmented_map_resized = cv2.resize(
-                         segmented_output.cpu().numpy().squeeze(),
-                         (w_orig, h_orig),
-                         interpolation=cv2.INTER_NEAREST # Use nearest neighbor for class maps
-                     )
-                     results["segmented_image"] = segmented_map_resized
+                    # Assuming output is class indices, needs conversion for visualization if needed
+                    # Resize back to original image dimensions for consistency
+                    segmented_map_resized = cv2.resize(
+                        segmented_output.cpu().numpy().squeeze(),
+                        (w_orig, h_orig),
+                        interpolation=cv2.INTER_NEAREST,  # Use nearest neighbor for class maps
+                    )
+                    results["segmented_image"] = segmented_map_resized
                 else:
-                     results["segmented_image"] = None
+                    results["segmented_image"] = None
 
             # --- Improved Cloth Masking and Contour Detection ---
             gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0) # Slight blur helps Otsu
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)  # Slight blur helps Otsu
 
             # Use Otsu's thresholding + Inverse Binary Threshold
             # This works well for dark objects on light backgrounds
@@ -185,9 +188,13 @@ class ClothRecognitionModule:
             # MORPH_OPEN removes small noise objects (dots in background)
             # MORPH_CLOSE fills small holes within the main object
             kernel_open = np.ones((5, 5), np.uint8)
-            kernel_close = np.ones((7, 7), np.uint8) # Larger kernel for closing
-            cleaned_mask = cv2.morphologyEx(initial_mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-            cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel_close, iterations=2) # More closing iterations if needed
+            kernel_close = np.ones((7, 7), np.uint8)  # Larger kernel for closing
+            cleaned_mask = cv2.morphologyEx(
+                initial_mask, cv2.MORPH_OPEN, kernel_open, iterations=1
+            )
+            cleaned_mask = cv2.morphologyEx(
+                cleaned_mask, cv2.MORPH_CLOSE, kernel_close, iterations=2
+            )  # More closing iterations if needed
 
             # Find contours on the *cleaned* mask
             # RETR_EXTERNAL finds only the outer contours
@@ -198,14 +205,18 @@ class ClothRecognitionModule:
             # Find the largest contour (should be the cloth)
             if contours:
                 main_contour = max(contours, key=cv2.contourArea)
-                min_contour_area = 100 # Adjust if necessary, but Otsu should give a clean main object
-                
+                min_contour_area = (
+                    100  # Adjust if necessary, but Otsu should give a clean main object
+                )
+
                 if cv2.contourArea(main_contour) > min_contour_area:
-                    results["contours"] = [main_contour] # Store only the main contour
-                    
+                    results["contours"] = [main_contour]  # Store only the main contour
+
                     # Create the final cloth mask by drawing the largest contour
                     final_cloth_mask = np.zeros_like(gray)
-                    cv2.drawContours(final_cloth_mask, [main_contour], -1, 255, -1) # Fill the contour
+                    cv2.drawContours(
+                        final_cloth_mask, [main_contour], -1, 255, -1
+                    )  # Fill the contour
                     results["cloth_mask"] = final_cloth_mask
 
                     # Calculate area
@@ -214,45 +225,51 @@ class ClothRecognitionModule:
                     # Get dimensions from the contour's bounding box
                     x, y, w, h = cv2.boundingRect(main_contour)
                     contour_dimensions = np.array([w, h], dtype=np.float32)
-                    
+
                     # Use contour dimensions if they seem valid, otherwise keep DL prediction
-                    if w > 10 and h > 10: # Basic sanity check
-                       logger.info("Using contour dimensions.")
-                       results["dimensions"] = contour_dimensions
+                    if w > 10 and h > 10:  # Basic sanity check
+                        logger.info("Using contour dimensions.")
+                        results["dimensions"] = contour_dimensions
                     else:
-                       logger.warning("Contour dimensions seem small, using predicted dimensions.")
-                       # Keep results["dimensions"] as the predicted_dimensions
-                
+                        logger.warning(
+                            "Contour dimensions seem small, using predicted dimensions."
+                        )
+                        # Keep results["dimensions"] as the predicted_dimensions
+
                 else:
-                    logger.warning("Largest contour area is below threshold. No main cloth detected.")
+                    logger.warning(
+                        "Largest contour area is below threshold. No main cloth detected."
+                    )
                     # Keep default empty mask, area=0, etc.
                     # Optionally, could return the 'cleaned_mask' here if partial detection is useful
-                    # results["cloth_mask"] = cleaned_mask 
+                    # results["cloth_mask"] = cleaned_mask
             else:
                 logger.warning("No contours found after thresholding and cleaning.")
                 # Keep default empty mask, area=0, etc.
 
-
             # --- Edge Detection ---
             # Apply Canny to the *final* cloth mask for clearer edges of the detected object
-            if np.any(results["cloth_mask"]): # Only run Canny if mask is not empty
-                 results["edges"] = cv2.Canny(results["cloth_mask"], 50, 150)
+            if np.any(results["cloth_mask"]):  # Only run Canny if mask is not empty
+                results["edges"] = cv2.Canny(results["cloth_mask"], 50, 150)
             else:
-                 results["edges"] = np.zeros_like(gray) # Ensure edges is correct shape if mask is empty
-
+                results["edges"] = np.zeros_like(
+                    gray
+                )  # Ensure edges is correct shape if mask is empty
 
         except Exception as e:
-            logger.error(f"Error during cloth processing: {e}", exc_info=True) # Log traceback
+            logger.error(
+                f"Error during cloth processing: {e}", exc_info=True
+            )  # Log traceback
             results["error"] = str(e)
             # Attempt basic fallback using the improved masking?
             try:
                 gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
                 blurred = cv2.GaussianBlur(gray, (5, 5), 0)
                 thresh_val, initial_mask = cv2.threshold(
-                     blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+                    blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
                 )
                 contours, _ = cv2.findContours(
-                     initial_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    initial_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                 )
                 if contours:
                     largest_contour = max(contours, key=cv2.contourArea)
@@ -265,18 +282,17 @@ class ClothRecognitionModule:
                     results["cloth_mask"] = fallback_mask
                     results["edges"] = cv2.Canny(fallback_mask, 100, 200)
                 else:
-                     # If fallback also fails severely, keep defaults but add error
-                     results["dimensions"] = default_dimensions # Reset to default dims
+                    # If fallback also fails severely, keep defaults but add error
+                    results["dimensions"] = default_dimensions  # Reset to default dims
             except Exception as fallback_e:
-                 logger.error(f"Error during fallback processing: {fallback_e}")
-                 results["error"] = f"Main error: {e}; Fallback error: {fallback_e}"
-                 # Ensure defaults are set if fallback fails
-                 results["dimensions"] = default_dimensions
-                 results["contours"] = []
-                 results["area"] = 0.0
-                 results["cloth_mask"] = np.zeros_like(gray)
-                 results["edges"] = np.zeros_like(gray)
-
+                logger.error(f"Error during fallback processing: {fallback_e}")
+                results["error"] = f"Main error: {e}; Fallback error: {fallback_e}"
+                # Ensure defaults are set if fallback fails
+                results["dimensions"] = default_dimensions
+                results["contours"] = []
+                results["area"] = 0.0
+                results["cloth_mask"] = np.zeros_like(gray)
+                results["edges"] = np.zeros_like(gray)
 
         return results
 
@@ -286,10 +302,11 @@ class ClothRecognitionModule:
         transform = transforms.Compose(
             [
                 transforms.ToPILImage(),
-                transforms.Resize((512, 512)), # Resize needed for fixed input models
+                transforms.Resize((512, 512)),  # Resize needed for fixed input models
                 transforms.ToTensor(),
                 transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225] # Standard ImageNet stats
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],  # Standard ImageNet stats
                 ),
             ]
         )
@@ -307,7 +324,9 @@ class ClothRecognitionModule:
             # Input tensor should already be preprocessed and on the correct device
             logits = self.semantic_segmenter(image_tensor)
             # Get the class index with the highest probability for each pixel
-            mask = torch.argmax(logits, dim=1, keepdim=True) # Keep channel dim for consistency
+            mask = torch.argmax(
+                logits, dim=1, keepdim=True
+            )  # Keep channel dim for consistency
         # Mask is expected to be on the same device as input (self.device)
         # Return it as is (on GPU/CPU), downstream might move to CPU if needed
-        return mask.squeeze(0) # Remove batch dim, keep C=1 H W
+        return mask.squeeze(0)  # Remove batch dim, keep C=1 H W

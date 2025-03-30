@@ -3,12 +3,12 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import cv2
+import gymnasium as gym  # OpenAI Gym for RL environments
 import numpy as np
 import shapely.affinity as sa  # For rotating and transforming polygons
 import shapely.geometry as sg  # For handling complex polygons
 import torch
 import torch.nn as nn
-import gymnasium as gym  # OpenAI Gym for RL environments
 import torch.nn.functional as F
 import torch.optim as optim
 
@@ -92,7 +92,7 @@ class PackingEnvironment(gym.Env):
         # Keep track of which pattern each polygon belongs to
         self.pattern_idx_map = []
         pattern_count = 0
-        
+
         # Process each pattern and its contours
         for pattern_idx, pattern in enumerate(patterns):
             if "contours" in pattern and pattern["contours"]:
@@ -101,31 +101,35 @@ class PackingEnvironment(gym.Env):
                     try:
                         # Reshape contour to the format Shapely expects
                         contour_points = contour.squeeze()
-                        
+
                         # Check if we have enough points for a valid polygon
                         if len(contour_points) < 4:
                             # Skip very small contours or create fallback
                             continue
-                        
+
                         # Make sure it's closed (first and last points match)
                         if not np.array_equal(contour_points[0], contour_points[-1]):
-                            contour_points = np.vstack([contour_points, contour_points[0]])
-                        
+                            contour_points = np.vstack(
+                                [contour_points, contour_points[0]]
+                            )
+
                         # Create a Shapely polygon
                         polygon = sg.Polygon(contour_points)
-                        
+
                         # Verify the polygon is valid
                         if not polygon.is_valid:
                             continue
-                            
+
                         # Add the polygon and map it to the original pattern
                         self.pattern_polygons.append(polygon)
                         self.pattern_idx_map.append(pattern_idx)
                         pattern_count += 1
-                        
+
                     except Exception as e:
-                        logger.warning(f"Error creating polygon from contour {contour_idx}: {e}")
-                
+                        logger.warning(
+                            f"Error creating polygon from contour {contour_idx}: {e}"
+                        )
+
                 # If no valid polygons were created, use a fallback
                 if len(self.pattern_polygons) == pattern_count:
                     width, height = pattern.get("dimensions", (10, 10))
@@ -149,8 +153,10 @@ class PackingEnvironment(gym.Env):
                     pattern_count += 1
                 else:
                     # Log warning for patterns without geometry
-                    logger.warning(f"Pattern {pattern_idx} missing both contours and dimensions")
-            
+                    logger.warning(
+                        f"Pattern {pattern_idx} missing both contours and dimensions"
+                    )
+
         # Ensure we have at least one pattern
         if not self.pattern_polygons:
             # Create a default rectangle as fallback
@@ -221,7 +227,7 @@ class PackingEnvironment(gym.Env):
 
     def step(self, action: Dict) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment with enhanced placement options
-        
+
         Enhanced to handle:
         1. Fine rotation adjustments for more precise placement
         2. Better rewards for successful placements
@@ -268,9 +274,13 @@ class PackingEnvironment(gym.Env):
             return self.current_state, reward, done, False, info
 
         # Get the original pattern this polygon belongs to
-        original_pattern_idx = self.pattern_idx_map[pattern_idx] if pattern_idx < len(self.pattern_idx_map) else pattern_idx
+        original_pattern_idx = (
+            self.pattern_idx_map[pattern_idx]
+            if pattern_idx < len(self.pattern_idx_map)
+            else pattern_idx
+        )
         pattern = self.patterns[original_pattern_idx]
-        
+
         # Try to place pattern using Shapely for precise collision detection
         success = self._place_pattern(pattern, position, rotation, pattern_idx)
 
@@ -295,7 +305,9 @@ class PackingEnvironment(gym.Env):
 
             # Calculate placement quality metrics
             # Higher value indicates better placement
-            placement_quality = self._calculate_placement_quality(pattern_idx, position, rotation)
+            placement_quality = self._calculate_placement_quality(
+                pattern_idx, position, rotation
+            )
 
             # Add the placement to tracking
             self.placed_patterns.append(
@@ -338,14 +350,16 @@ class PackingEnvironment(gym.Env):
 
         return self.current_state, reward, terminated, truncated, info
 
-    def _calculate_placement_quality(self, pattern_idx: int, position: Tuple[int, int], rotation: float) -> float:
+    def _calculate_placement_quality(
+        self, pattern_idx: int, position: Tuple[int, int], rotation: float
+    ) -> float:
         """Calculate how good a pattern placement is based on its relationship to other patterns
-        
+
         Evaluates:
         1. Closeness to other patterns (tighter packing)
         2. Alignment with cloth edges and other patterns
         3. Material utilization improvement
-        
+
         Returns:
             Quality score between 0.0 and 1.0
         """
@@ -357,7 +371,10 @@ class PackingEnvironment(gym.Env):
             return quality
 
         # Get pattern polygon
-        if pattern_idx >= len(self.pattern_polygons) or self.pattern_polygons[pattern_idx] is None:
+        if (
+            pattern_idx >= len(self.pattern_polygons)
+            or self.pattern_polygons[pattern_idx] is None
+        ):
             return quality
 
         pattern_polygon = self.pattern_polygons[pattern_idx]
@@ -367,7 +384,7 @@ class PackingEnvironment(gym.Env):
         placed_polygon = sa.translate(placed_polygon, position[0], position[1])
 
         # Calculate minimum distance to any other placed pattern
-        min_distance = float('inf')
+        min_distance = float("inf")
         alignment_score = 0.0
 
         for placed in self.placed_patterns:
@@ -375,13 +392,17 @@ class PackingEnvironment(gym.Env):
             placed_pos = placed["position"]
             placed_rot = placed["rotation"]
 
-            if (placed_pattern_idx < len(self.pattern_polygons) and
-                self.pattern_polygons[placed_pattern_idx] is not None):
+            if (
+                placed_pattern_idx < len(self.pattern_polygons)
+                and self.pattern_polygons[placed_pattern_idx] is not None
+            ):
 
                 # Get the polygon for the placed pattern
                 existing_poly = self.pattern_polygons[placed_pattern_idx]
                 existing_poly = sa.rotate(existing_poly, placed_rot, origin=(0, 0))
-                existing_poly = sa.translate(existing_poly, placed_pos[0], placed_pos[1])
+                existing_poly = sa.translate(
+                    existing_poly, placed_pos[0], placed_pos[1]
+                )
 
                 # Calculate distance between polygons
                 try:
@@ -411,26 +432,34 @@ class PackingEnvironment(gym.Env):
         bottom_edge_dist = self.cloth_height - position[1]
 
         # Reward being close to edges but not too close
-        edge_distances = [left_edge_dist, right_edge_dist, top_edge_dist, bottom_edge_dist]
+        edge_distances = [
+            left_edge_dist,
+            right_edge_dist,
+            top_edge_dist,
+            bottom_edge_dist,
+        ]
         for dist in edge_distances:
             if dist < 10:  # Very close to edge
                 border_alignment += 0.25
 
         # Combine scores with different weights
         quality = (
-            0.4 * distance_score +   # Closeness to other patterns
-            0.3 * alignment_score +  # Alignment with other patterns
-            0.3 * border_alignment   # Alignment with cloth edges
+            0.4 * distance_score  # Closeness to other patterns
+            + 0.3 * alignment_score  # Alignment with other patterns
+            + 0.3 * border_alignment  # Alignment with cloth edges
         )
 
         return min(1.0, max(0.0, quality))
 
     def _place_pattern(
-        self, pattern: Dict, position: Tuple[int, int], rotation: float, 
-        pattern_polygon_idx: int = None
+        self,
+        pattern: Dict,
+        position: Tuple[int, int],
+        rotation: float,
+        pattern_polygon_idx: int = None,
     ) -> bool:
         """Attempt to place pattern at given position and rotation using Shapely
-        
+
         Args:
             pattern: Dictionary with pattern data
             position: (x, y) position to place the pattern
@@ -438,9 +467,11 @@ class PackingEnvironment(gym.Env):
             pattern_polygon_idx: Index in pattern_polygons to use (for multi-piece patterns)
         """
         x, y = position
-        
+
         # Use provided polygon index if available
-        if pattern_polygon_idx is not None and pattern_polygon_idx < len(self.pattern_polygons):
+        if pattern_polygon_idx is not None and pattern_polygon_idx < len(
+            self.pattern_polygons
+        ):
             polygon_idx = pattern_polygon_idx
         else:
             # Find pattern index by comparing object identities
@@ -544,10 +575,10 @@ class PackingEnvironment(gym.Env):
 
     def _calculate_pattern_distribution(self) -> float:
         """Calculate how well patterns are distributed across the cloth
-        
+
         This rewards placements that utilize different areas of the cloth
         rather than clustering all patterns in one area.
-        
+
         Returns:
             Distribution score between 0.0 and 1.0
         """
@@ -634,13 +665,13 @@ class PackingEnvironment(gym.Env):
 
     def _get_state(self) -> np.ndarray:
         """Get current state representation with enhanced pattern information
-        
+
         Enhanced state representation with:
         1. Current cloth space (occupied areas)
         2. Next pattern to place
         3. Distance transform for spatial awareness
         4. Individual channels for all available patterns to enable planning
-        
+
         Returns:
             State as stacked channels
         """
@@ -688,11 +719,16 @@ class PackingEnvironment(gym.Env):
                                 if contour is not None and len(contour) > 0:
                                     # Ensure contour is int32 and has correct shape
                                     contour_copy = np.array(contour, dtype=np.int32)
-                                    if len(contour_copy.shape) == 3 and contour_copy.shape[1] == 1:
+                                    if (
+                                        len(contour_copy.shape) == 3
+                                        and contour_copy.shape[1] == 1
+                                    ):
                                         # Reshape from (n, 1, 2) to (n, 2) if needed
-                                        contour_copy = contour_copy.reshape((contour_copy.shape[0], 2))
+                                        contour_copy = contour_copy.reshape(
+                                            (contour_copy.shape[0], 2)
+                                        )
                                     contours_copy.append(contour_copy)
-                            
+
                             if contours_copy:
                                 cv2.fillPoly(pattern_mask, contours_copy, 1)
                             else:
@@ -719,7 +755,9 @@ class PackingEnvironment(gym.Env):
             logger.warning(f"Error creating state: {e}")
             # Return a default state of zeros (3 + number of patterns channels)
             shape = self.cloth_space.shape
-            return np.zeros((3 + len(self.patterns), shape[0], shape[1]), dtype=np.float32)
+            return np.zeros(
+                (3 + len(self.patterns), shape[0], shape[1]), dtype=np.float32
+            )
 
     def _get_pattern_channel(self) -> np.ndarray:
         """Create channel showing next pattern to place"""
@@ -739,11 +777,16 @@ class PackingEnvironment(gym.Env):
                         if contour is not None and len(contour) > 0:
                             # Ensure contour is int32 and has correct shape
                             contour_copy = np.array(contour, dtype=np.int32)
-                            if len(contour_copy.shape) == 3 and contour_copy.shape[1] == 1:
+                            if (
+                                len(contour_copy.shape) == 3
+                                and contour_copy.shape[1] == 1
+                            ):
                                 # Reshape from (n, 1, 2) to (n, 2) if needed
-                                contour_copy = contour_copy.reshape((contour_copy.shape[0], 2))
+                                contour_copy = contour_copy.reshape(
+                                    (contour_copy.shape[0], 2)
+                                )
                             contours_copy.append(contour_copy)
-                    
+
                     if contours_copy:
                         cv2.fillPoly(pattern_channel, contours_copy, 1)
                     else:
@@ -881,7 +924,7 @@ class ManagerNetwork(nn.Module):
 
     This network determines which pattern to place next based on the
     current state of the cloth space and available patterns.
-    
+
     Enhanced to better understand pattern relationships and optimize placement sequence.
     """
 
@@ -906,7 +949,6 @@ class ManagerNetwork(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),
-
             # Second conv block with deeper features
             nn.Conv2d(64, 128, 3, padding=1),
             nn.BatchNorm2d(128),
@@ -915,7 +957,6 @@ class ManagerNetwork(nn.Module):
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),
-
             # Adaptive pooling to handle variable sized inputs
             nn.AdaptiveAvgPool2d((8, 8)),
         )
@@ -934,7 +975,7 @@ class ManagerNetwork(nn.Module):
         # Global attention mechanism to focus on important cloth areas
         self.attention = nn.Sequential(
             nn.Conv2d(128, 1, 1),  # 1x1 conv to produce attention map
-            nn.Sigmoid()  # Normalize attention weights
+            nn.Sigmoid(),  # Normalize attention weights
         )
 
     def forward(self, x):
@@ -963,7 +1004,7 @@ class WorkerNetwork(nn.Module):
     """Low-level network for pattern placement
 
     This network determines where and at what rotation to place a selected pattern.
-    
+
     Enhanced with deeper feature extraction and advanced placement heatmap generation
     to better optimize pattern placement for material utilization.
     """
@@ -1025,7 +1066,9 @@ class WorkerNetwork(nn.Module):
         )
 
         self.upsample2 = nn.Sequential(
-            nn.ConvTranspose2d(256, 64, 2, stride=2),  # 256 = 128 + 128 (skip connection)
+            nn.ConvTranspose2d(
+                256, 64, 2, stride=2
+            ),  # 256 = 128 + 128 (skip connection)
             nn.BatchNorm2d(64),
             nn.ReLU(),
         )
@@ -1057,10 +1100,7 @@ class WorkerNetwork(nn.Module):
         )
 
         # Attention mechanism for emphasizing important regions
-        self.attention = nn.Sequential(
-            nn.Conv2d(256, 1, 1),
-            nn.Sigmoid()
-        )
+        self.attention = nn.Sequential(nn.Conv2d(256, 1, 1), nn.Sigmoid())
 
     def forward(self, x):
         """Forward pass through the network with skip connections
@@ -1090,23 +1130,35 @@ class WorkerNetwork(nn.Module):
 
         # Generate placement heatmap using U-Net style decoder with skip connections
         up1 = self.upsample1(attended_features)
-        
+
         # Check and adjust feature dimensions if necessary
         # Fix for tensor size mismatch: Expected size 250 but got size 251
-        if up1.size(2) != conv2_features.size(2) or up1.size(3) != conv2_features.size(3):
-            up1 = F.interpolate(up1, size=(conv2_features.size(2), conv2_features.size(3)), 
-                                mode='bilinear', align_corners=False)
-        
+        if up1.size(2) != conv2_features.size(2) or up1.size(3) != conv2_features.size(
+            3
+        ):
+            up1 = F.interpolate(
+                up1,
+                size=(conv2_features.size(2), conv2_features.size(3)),
+                mode="bilinear",
+                align_corners=False,
+            )
+
         # Concatenate with skip connection from encoder
         cat1 = torch.cat([up1, conv2_features], dim=1)
 
         up2 = self.upsample2(cat1)
-        
+
         # Also ensure the second upsampling matches dimensions
-        if up2.size(2) != conv1_features.size(2) or up2.size(3) != conv1_features.size(3):
-            up2 = F.interpolate(up2, size=(conv1_features.size(2), conv1_features.size(3)), 
-                               mode='bilinear', align_corners=False)
-            
+        if up2.size(2) != conv1_features.size(2) or up2.size(3) != conv1_features.size(
+            3
+        ):
+            up2 = F.interpolate(
+                up2,
+                size=(conv1_features.size(2), conv1_features.size(3)),
+                mode="bilinear",
+                align_corners=False,
+            )
+
         # Concatenate with skip connection from encoder
         cat2 = torch.cat([up2, conv1_features], dim=1)
 
@@ -1148,7 +1200,9 @@ class HierarchicalRL:
         # Initialize networks
         # Account for all channels in observation space (3 + number of patterns)
         self.manager = ManagerNetwork(
-            input_channels=env.observation_space.shape[0],  # All channels from observation space
+            input_channels=env.observation_space.shape[
+                0
+            ],  # All channels from observation space
             hidden_dim=256,
             num_patterns=len(env.patterns),
         ).to(self.device)
@@ -1156,7 +1210,8 @@ class HierarchicalRL:
         # The worker network needs to take the state dimensions plus one additional channel
         # for the selected pattern (state + 1)
         self.worker = WorkerNetwork(
-            input_channels=env.observation_space.shape[0] + 1,  # State channels + selected pattern
+            input_channels=env.observation_space.shape[0]
+            + 1,  # State channels + selected pattern
             num_rotations=len(env.rotation_angles),
             cloth_dims=cloth_dims,
         ).to(self.device)
@@ -1215,11 +1270,16 @@ class HierarchicalRL:
                             if contour is not None and len(contour) > 0:
                                 # Ensure contour is int32 and has correct shape
                                 contour_copy = np.array(contour, dtype=np.int32)
-                                if len(contour_copy.shape) == 3 and contour_copy.shape[1] == 1:
+                                if (
+                                    len(contour_copy.shape) == 3
+                                    and contour_copy.shape[1] == 1
+                                ):
                                     # Reshape from (n, 1, 2) to (n, 2) if needed
-                                    contour_copy = contour_copy.reshape((contour_copy.shape[0], 2))
+                                    contour_copy = contour_copy.reshape(
+                                        (contour_copy.shape[0], 2)
+                                    )
                                 contours_copy.append(contour_copy)
-                        
+
                         if contours_copy:
                             cv2.fillPoly(pattern_channel, contours_copy, 1)
                         else:
@@ -1310,15 +1370,15 @@ class HierarchicalRL:
 
     def select_pattern(self, sequence_probs, epsilon=0.1):
         """Select a pattern using advanced selection strategy
-        
+
         Enhanced with pattern size awareness and prioritization to improve
         multi-pattern packing efficiency. Uses an optimized selection strategy
         that considers:
-        
+
         1. Largest patterns first (greedy placement of large patterns)
         2. Probability scores from manager network
         3. Exploration vs. exploitation balance
-        
+
         This approach follows research showing that placing larger patterns first
         often leads to better overall utilization.
 
@@ -1348,7 +1408,9 @@ class HierarchicalRL:
                 return None  # No valid actions
 
             # Special case: only one available pattern
-            if sequence_probs.ndim == 0 or (len(sequence_probs) == 1 and len(valid_actions) == 1):
+            if sequence_probs.ndim == 0 or (
+                len(sequence_probs) == 1 and len(valid_actions) == 1
+            ):
                 return valid_actions[0]
 
             # Get pattern sizes
@@ -1396,14 +1458,20 @@ class HierarchicalRL:
                     size_score = size_ranks.get(pattern_idx, 0.0)
 
                     # Combined score (weighted blend)
-                    combined_scores[pattern_idx] = 0.7 * size_score + 0.3 * network_score
+                    combined_scores[pattern_idx] = (
+                        0.7 * size_score + 0.3 * network_score
+                    )
 
                 # Select pattern with highest combined score
                 best_action = max(combined_scores.items(), key=lambda x: x[1])[0]
                 return best_action
             else:
                 # Fallback to largest pattern if probabilities are invalid
-                return pattern_sizes[0][0] if pattern_sizes else np.random.choice(valid_actions)
+                return (
+                    pattern_sizes[0][0]
+                    if pattern_sizes
+                    else np.random.choice(valid_actions)
+                )
 
     def _update_networks(self):
         """Update both networks using stored experiences"""
@@ -1450,15 +1518,22 @@ class HierarchicalRL:
                             if contour is not None and len(contour) > 0:
                                 # Ensure contour is int32 and has correct shape
                                 contour_copy = np.array(contour, dtype=np.int32)
-                                if len(contour_copy.shape) == 3 and contour_copy.shape[1] == 1:
+                                if (
+                                    len(contour_copy.shape) == 3
+                                    and contour_copy.shape[1] == 1
+                                ):
                                     # Reshape from (n, 1, 2) to (n, 2) if needed
-                                    contour_copy = contour_copy.reshape((contour_copy.shape[0], 2))
+                                    contour_copy = contour_copy.reshape(
+                                        (contour_copy.shape[0], 2)
+                                    )
                                 contours_copy.append(contour_copy)
-                        
+
                         if contours_copy:
                             cv2.fillPoly(pattern_mask, contours_copy, 1)
                     except Exception as e:
-                        logger.warning(f"Error filling pattern in _update_networks: {e}")
+                        logger.warning(
+                            f"Error filling pattern in _update_networks: {e}"
+                        )
 
             worker_state = np.concatenate([state, pattern_mask[np.newaxis, :, :]])
             worker_states.append(worker_state)
@@ -1573,11 +1648,16 @@ class HierarchicalRL:
                         if contour is not None and len(contour) > 0:
                             # Ensure contour is int32 and has correct shape
                             contour_copy = np.array(contour, dtype=np.int32)
-                            if len(contour_copy.shape) == 3 and contour_copy.shape[1] == 1:
+                            if (
+                                len(contour_copy.shape) == 3
+                                and contour_copy.shape[1] == 1
+                            ):
                                 # Reshape from (n, 1, 2) to (n, 2) if needed
-                                contour_copy = contour_copy.reshape((contour_copy.shape[0], 2))
+                                contour_copy = contour_copy.reshape(
+                                    (contour_copy.shape[0], 2)
+                                )
                             contours_copy.append(contour_copy)
-                    
+
                     if contours_copy:
                         cv2.fillPoly(pattern_channel, contours_copy, 1)
                     else:
@@ -1680,7 +1760,7 @@ class PatternFittingModule:
         self, cloth_data: Dict, patterns_data: List[Dict]
     ) -> Tuple[Dict, List[Dict]]:
         """Prepare cloth and patterns data for packing environment
-        
+
         Enhanced to use cloth and pattern masks for better fitting.
 
         Args:
@@ -1716,7 +1796,9 @@ class PatternFittingModule:
                         dimensions = np.array([w, h], dtype=np.float32)
                         if w > 10 and h > 10:  # Reasonable size check
                             processed_cloth["dimensions"] = dimensions
-                            logger.info(f"Using cloth dimensions from mask: {dimensions}")
+                            logger.info(
+                                f"Using cloth dimensions from mask: {dimensions}"
+                            )
             except Exception as e:
                 logger.warning(f"Error processing cloth mask: {e}")
 
@@ -1827,7 +1909,9 @@ class PatternFittingModule:
                         contour = processed_pattern["contours"][0]
                         x, y, w, h = cv2.boundingRect(contour)
                         if w > 5 and h > 5:  # Reasonable size check
-                            processed_pattern["dimensions"] = np.array([w, h], dtype=np.float32)
+                            processed_pattern["dimensions"] = np.array(
+                                [w, h], dtype=np.float32
+                            )
                     else:
                         # Handle case where no valid contours were found
                         if "dimensions" in processed_pattern:
@@ -1842,14 +1926,21 @@ class PatternFittingModule:
 
                             # Create rectangle contour
                             rect = np.array(
-                                [[[0, 0]], [[width, 0]], [[width, height]], [[0, height]]],
+                                [
+                                    [[0, 0]],
+                                    [[width, 0]],
+                                    [[width, height]],
+                                    [[0, height]],
+                                ],
                                 dtype=np.float32,
                             )
 
                             processed_pattern["contours"] = [rect]
                         else:
                             # Skip pattern with no valid geometry data
-                            logger.warning("Pattern has no valid contours or dimensions, skipping")
+                            logger.warning(
+                                "Pattern has no valid contours or dimensions, skipping"
+                            )
                             continue
 
                 # Apply same scale to patterns if cloth was scaled
