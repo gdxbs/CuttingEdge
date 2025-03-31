@@ -4,13 +4,15 @@
 
 Cutting Edge is a computer vision system that analyzes garment patterns and cloth materials using deep learning. The system helps in garment manufacturing by recognizing pattern types, detecting key features, and estimating dimensions for optimal pattern placement on cloth materials to minimize waste.
 
-![System Diagram](https://via.placeholder.com/800x400?text=Cutting+Edge+System+Architecture)
+The system uses Hierarchical Reinforcement Learning to optimize pattern placement, resulting in better material utilization and reduced fabric waste during garment production.
+
+![Pattern Fitting Process](output/pattern_fitting_result.png)
 
 ## Features
 
 - **Pattern Recognition**: Identifies pattern types from images using ResNet50 architecture
 - **Cloth Material Analysis**: Analyzes cloth properties and contours using EfficientNet and U-Net
-- **Dimension Estimation**: Extracts accurate dimensions for both patterns and cloth
+- **Dimension Estimation**: Extracts accurate measurements for both patterns and cloth
 - **Pattern Fitting**: Optimizes pattern placement on cloth using Hierarchical Reinforcement Learning
 - **Material Utilization**: Maximizes cloth utilization and minimizes waste using optimization algorithms
 
@@ -25,7 +27,7 @@ The Pattern Recognition Module processes garment pattern images using multiple d
 - **Corner Detection (LSTM)**: Locates corner points on the pattern
 - **Dimension Predictor**: Estimates the real-world dimensions of the pattern
 
-![Pattern Recognition](https://via.placeholder.com/600x300?text=Pattern+Recognition+Process)
+![Pattern Recognition](output/pattern_detection.png)
 
 ### 2. Cloth Recognition Module
 
@@ -33,10 +35,10 @@ The Cloth Recognition Module analyzes cloth materials using:
 
 - **EfficientNet-B0**: Classifies cloth material types
 - **U-Net Segmentation**: Creates pixel-level cloth segmentation masks
-- **Contour Detection**: Identifies cloth boundaries with traditional computer vision
+- **Contour Detection**: Identifies cloth boundaries with advanced computer vision techniques
 - **Dimension Mapper**: Estimates cloth dimensions for cutting planning
 
-![Cloth Analysis](https://via.placeholder.com/600x300?text=Cloth+Analysis+Process)
+![Cloth Analysis](output/cloth_detection_results.png)
 
 ### 3. Pattern Fitting Module
 
@@ -47,14 +49,14 @@ The Pattern Fitting Module optimizes pattern placement on cloth materials using 
 - **Reward System**: Optimizes for material utilization, compactness, and edge usage
 - **Visualization**: Provides visual representation of optimized pattern layouts
 
-![Pattern Fitting](https://via.placeholder.com/600x300?text=Pattern+Fitting+Process)
+![Pattern Fitting](output/final_cloth.png)
 
 ### 4. Dataset System
 
 The system works with the GarmentCodeData dataset, which includes:
 
 - Sewing pattern specifications in JSON format
-- 2D pattern images
+- 2D pattern images (PNG format)
 - Design parameters in YAML format
 - 3D garment mesh segmentation data
 
@@ -75,14 +77,14 @@ The system works with the GarmentCodeData dataset, which includes:
 
 3. **Pattern Fitting Module**: `pattern_fitting_module.py`
    - Implements Hierarchical Reinforcement Learning for pattern placement
-   - Uses Proximal Policy Optimization (PPO) algorithm from stable-baselines3
+   - Organized as a two-level approach with manager and worker networks
    - Creates packing environment with OpenAI Gym interface
    - Optimizes for material utilization, compactness, and edge usage
    - Provides visualization of fitted patterns
 
 4. **Dataset Handling**: `dataset.py`
-   - Loads and preprocesses the GarmentCodeData dataset
-   - Handles train/validation/test splits
+   - Handles loading and processing of the GarmentCodeData dataset
+   - Manages train/validation/test splits based on official dataset divisions
    - Transforms data for model training
    - Implements PyTorch Dataset interface for efficient data loading
 
@@ -95,7 +97,7 @@ The system works with the GarmentCodeData dataset, which includes:
 
 The system uses several state-of-the-art deep learning architectures:
 
-- **ResNet50**: A residual neural network with 50 layers, effective for image classification tasks
+- **ResNet50**: A residual neural network with 50 layers for image classification tasks
 - **LSTM**: Long Short-Term Memory network for sequence modeling (corner detection)
 - **EfficientNet-B0**: Lightweight but powerful CNN for cloth classification
 - **U-Net**: Encoder-decoder architecture with skip connections for semantic segmentation
@@ -108,7 +110,7 @@ The system uses several state-of-the-art deep learning architectures:
 git clone https://github.com/gdxbs/CuttingEdge
 cd CuttingEdge
 
-# Create and activate a virtual environment
+# Create and activate a virtual environment (using uv)
 uv venv
 source .venv/bin/activate  # Unix
 .venv\Scripts\activate     # Windows
@@ -149,6 +151,23 @@ python -m cutting_edge.main --pattern_dir path/to/patterns/ --cloth_image path/t
 
 # Specify output directory for visualizations
 python -m cutting_edge.main --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg --visualize --output_dir custom_output
+```
+
+## Example Data
+
+The repository includes sample images for testing:
+
+- **Pattern images**: Located in `images/shape/` and `images/shape copy/` directories
+- **Cloth images**: Located in `images/cloth/` and `images/cloth copy/` directories
+
+Sample usage with included images:
+
+```bash
+# Analyze a single pattern and cloth
+python -m cutting_edge.main --pattern_image images/shape/rand_IA13VWK1QG_pattern.png --cloth_image images/cloth/generated_cloth_4.jpeg --visualize
+
+# Try multiple patterns
+python -m cutting_edge.main --pattern_dir images/shape\ copy/ --cloth_image images/cloth/generated_cloth_4.jpeg --multi_pattern --visualize
 ```
 
 ## Development
@@ -198,7 +217,7 @@ mypy .
 3. **Feature Extraction**: EfficientNet extracts features
 4. **Cloth Type Classification**: Identifies material type
 5. **Semantic Segmentation**: U-Net generates pixel-level cloth masks
-6. **Contour Detection**: OpenCV processes edges and contours using adaptive thresholding
+6. **Contour Detection**: OpenCV processes edges and contours using adaptive thresholding and morphological operations
 7. **Output**: Cloth properties, dimensions, and contour information
 
 ### Pattern Fitting Pipeline
@@ -213,6 +232,19 @@ mypy .
    - Process repeats until all patterns are placed or no valid placements remain
 5. **Output**: Final layout, material utilization percentage, and placement details for each pattern
 
+## Project Status
+
+This project is under active development. Current status:
+
+- ✅ Pattern Recognition Module - Complete
+- ✅ Cloth Recognition Module - Complete
+- ✅ Pattern Fitting Module - Complete
+- ⏳ Dataset Integration - Partially Complete
+- ⏳ Training Pipeline - Partially Complete
+- ⏳ Test Suite - In Progress
+
+See [ISSUES.md](ISSUES.md) for a detailed list of completed and remaining tasks.
+
 ## Scientific Foundation
 
 This project builds on several research papers:
@@ -224,6 +256,20 @@ This project builds on several research papers:
 - **GarmentCodeData**: Korosteleva, J., et al. (2024). "GarmentCodeData: A Dataset of 3D Made-to-Measure Garments with Sewing Patterns." ECCV 2024.
 - **Hierarchical RL**: Wang, X., et al. (2022). "Planning Irregular Object Packing via Hierarchical Reinforcement Learning." Mathematics 2022, 10, 327.
 - **Tree Search + RL**: Zhang, Y., et al. (2023). "Tree Search Reinforcement Learning for Two-Dimensional Cutting Stock Problem With Complex Constraints." IEEE Transactions on Cybernetics, 53(9), 5320-5332.
+
+## Requirements
+
+The project depends on the following major libraries:
+
+- PyTorch (2.1.2+) and torchvision (0.16.2+) for deep learning models
+- OpenCV (4.9.0+) for image processing and computer vision
+- Segmentation Models PyTorch (0.4.0+) for semantic segmentation 
+- Gymnasium (1.1.1+) for reinforcement learning environments
+- Stable-Baselines3 (2.6.0+) for RL algorithm implementations
+- Shapely (2.0.7+) for geometry operations in pattern placement
+- Other standard libraries: numpy, scipy, matplotlib, pillow, etc.
+
+See `pyproject.toml` for the complete list of dependencies.
 
 ## Future Development
 
