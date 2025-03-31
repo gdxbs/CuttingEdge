@@ -177,12 +177,21 @@ class ClothRecognitionModule:
             gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)  # Slight blur helps Otsu
 
-            # Use Otsu's thresholding + Inverse Binary Threshold
-            # This works well for dark objects on light backgrounds
-            thresh_val, initial_mask = cv2.threshold(
-                blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-            )
-            logger.info(f"Otsu threshold value: {thresh_val}")
+            # Use Otsu's thresholding, but check image properties first
+            # Dark cloth on light background requires inverse binary threshold
+            # Light cloth on dark background requires regular binary threshold
+            mean_value = np.mean(blurred)
+            if mean_value > 127:
+                # Dark cloth on light background (common case)
+                thresh_val, initial_mask = cv2.threshold(
+                    blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+                )
+            else:
+                # Light cloth on dark background
+                thresh_val, initial_mask = cv2.threshold(
+                    blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )
+            logger.info(f"Otsu threshold value: {thresh_val}, mean value: {mean_value}")
 
             # Clean up the mask:
             # MORPH_OPEN removes small noise objects (dots in background)
