@@ -38,3 +38,5 @@ data/
 models/
 outputs/
 logs/
+
+.DS_Store
