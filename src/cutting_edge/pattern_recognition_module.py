@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import cv2
 import numpy as np
@@ -9,12 +9,12 @@ import torch.optim as optim
 import torchvision.models as models
 
 from cutting_edge.dataset import DatasetLoader, PatternDataset
-from cutting_edge.utils import preprocess_image_for_model, extract_contours
+from cutting_edge.utils import extract_contours, preprocess_image_for_model
 
 
 class PatternCNN(nn.Module):
     """Pattern CNN for feature extraction and classification
-    
+
     Uses ResNet50 as backbone for feature extraction and adds
     a classification layer for pattern types.
     """
@@ -39,14 +39,16 @@ class PatternCNN(nn.Module):
 
 class PatternRecognitionModule:
     """Module for garment pattern recognition and dimension extraction
-    
+
     This module analyzes garment patterns in images to:
     1. Classify pattern type (e.g., shirt, pants, dress)
     2. Detect corner points for structure analysis
     3. Estimate pattern dimensions
     """
 
-    def __init__(self, dataset_path: Optional[str] = None, model_path: Optional[str] = None):
+    def __init__(
+        self, dataset_path: Optional[str] = None, model_path: Optional[str] = None
+    ):
         """Initialize the pattern recognition module"""
         # Set device (GPU if available, otherwise CPU)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -61,7 +63,7 @@ class PatternRecognitionModule:
             num_layers=2,
             bidirectional=True,
         )
-        
+
         # The dimension predictor will be initialized based on the dataset
         self.dimension_predictor = None
 
@@ -69,7 +71,7 @@ class PatternRecognitionModule:
         self.dataset_loader = None
         self.train_loader = None
         self.valid_loader = None
-        
+
         if dataset_path:
             self._initialize_dataset(dataset_path)
 
@@ -78,7 +80,9 @@ class PatternRecognitionModule:
             self.load_model(model_path)
             print(f"Loaded pretrained model from {model_path}")
         else:
-            print("No pretrained model found. Will need training if dataset is provided.")
+            print(
+                "No pretrained model found. Will need training if dataset is provided."
+            )
 
     def _initialize_dataset(self, dataset_path: str):
         """Initialize dataset and modify model architecture"""
@@ -141,7 +145,9 @@ class PatternRecognitionModule:
             self.load_model(model_path)
         else:
             if self.dataset_loader is None:
-                raise ValueError("Cannot train without dataset. Please initialize with dataset_path.")
+                raise ValueError(
+                    "Cannot train without dataset. Please initialize with dataset_path."
+                )
 
             print(f"No existing model found at {model_path}. Starting training...")
             self.train(num_epochs)
@@ -151,7 +157,9 @@ class PatternRecognitionModule:
     def train(self, num_epochs: int):
         """Train all components of the module"""
         if self.dataset_loader is None:
-            raise ValueError("Cannot train without dataset. Please initialize with dataset_path.")
+            raise ValueError(
+                "Cannot train without dataset. Please initialize with dataset_path."
+            )
 
         for epoch in range(num_epochs):
             self.cnn.train()
@@ -161,7 +169,7 @@ class PatternRecognitionModule:
             total_loss = 0
             correct_predictions = 0
             total_samples = 0
-            
+
             for batch_idx, batch in enumerate(self.train_loader):
                 images = batch["image"].to(self.device)
                 labels = batch["label"].to(self.device)
@@ -169,7 +177,7 @@ class PatternRecognitionModule:
 
                 # Forward pass through CNN
                 class_output, features = self.cnn(images)
-                
+
                 # Dimension prediction
                 dim_output = self.dimension_predictor(features)
 
@@ -196,7 +204,9 @@ class PatternRecognitionModule:
                 total_samples += labels.size(0)
 
                 if batch_idx % 100 == 0:
-                    print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {total_batch_loss.item():.4f}")
+                    print(
+                        f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {total_batch_loss.item():.4f}"
+                    )
 
             # Validation phase
             val_accuracy = self.validate()
@@ -208,7 +218,11 @@ class PatternRecognitionModule:
                 self.best_model_state = {
                     "cnn": self.cnn.state_dict(),
                     "lstm": self.corner_lstm.state_dict(),
-                    "dim_predictor": self.dimension_predictor.state_dict() if self.dimension_predictor else None,
+                    "dim_predictor": (
+                        self.dimension_predictor.state_dict()
+                        if self.dimension_predictor
+                        else None
+                    ),
                     "accuracy": val_accuracy,
                     "epoch": epoch,
                 }
@@ -243,77 +257,83 @@ class PatternRecognitionModule:
             try:
                 # Ensure corners is a proper numpy array
                 corners_array = np.array(corners).reshape(-1, 2)
-                
+
                 # Find extreme points
                 top = corners_array[corners_array[:, 1].argmin()]
                 bottom = corners_array[corners_array[:, 1].argmax()]
                 left = corners_array[corners_array[:, 0].argmin()]
                 right = corners_array[corners_array[:, 0].argmax()]
-                
+
                 # Calculate distances
-                height = np.sqrt((top[0] - bottom[0])**2 + (top[1] - bottom[1])**2)
-                width = np.sqrt((left[0] - right[0])**2 + (left[1] - right[1])**2)
-                
+                height = np.sqrt((top[0] - bottom[0]) ** 2 + (top[1] - bottom[1]) ** 2)
+                width = np.sqrt((left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2)
+
                 return torch.tensor([width, height], dtype=torch.float32)
             except Exception as e:
                 print(f"Error extracting dimensions from corners: {e}")
-        
+
         # Fallback: Use image dimensions with aspect ratio preserved
         h, w = image.shape[:2]
         scale = min(256 / w, 256 / h)
         width = w * scale
         height = h * scale
-        
+
         return torch.tensor([width, height], dtype=torch.float32)
 
     def process_pattern(self, pattern_image: np.ndarray) -> Dict:
         """Process a pattern image and extract features"""
         if pattern_image is None:
             raise ValueError("Input pattern image cannot be None")
-        
+
         # Make a copy to avoid modifying the original
         pattern_image_copy = pattern_image.copy()
-        
+
         # Ensure we have a 3-channel image
         if len(pattern_image_copy.shape) == 2:
             pattern_image_copy = cv2.cvtColor(pattern_image_copy, cv2.COLOR_GRAY2BGR)
-        
+
         # Set models to evaluation mode
         self.cnn.eval()
         self.corner_lstm.eval()
         if self.dimension_predictor:
             self.dimension_predictor.eval()
-        
+
         # Extract features
         try:
             # Preprocess image
-            processed_image = preprocess_image_for_model(pattern_image_copy, self.device)
-            
+            processed_image = preprocess_image_for_model(
+                pattern_image_copy, self.device
+            )
+
             with torch.no_grad():
                 # Get features
                 class_output, features = self.cnn(processed_image)
-                
+
                 # Get pattern type if trained with dataset
-                if hasattr(self, "train_dataset") and hasattr(self.train_dataset, "pattern_types"):
+                if hasattr(self, "train_dataset") and hasattr(
+                    self.train_dataset, "pattern_types"
+                ):
                     pattern_type = torch.argmax(class_output, dim=1).item()
                     pattern_type_name = self.train_dataset.pattern_types[pattern_type]
                 else:
                     pattern_type_name = "unknown"
-                
+
                 # Get corners
                 feature_seq = features.view(features.size(0), 1, -1)
                 corner_output, _ = self.corner_lstm(feature_seq)
                 corners = torch.sigmoid(corner_output).cpu().numpy().squeeze()
-                
+
                 # Get dimensions
                 if self.dimension_predictor:
-                    dimensions = self.dimension_predictor(features).cpu().numpy().squeeze()
+                    dimensions = (
+                        self.dimension_predictor(features).cpu().numpy().squeeze()
+                    )
                 else:
                     dimensions = self.extract_dimensions(pattern_image_copy, corners)
-                
+
                 # Extract contours using shared utility
                 contours = extract_contours(pattern_image_copy)
-                
+
                 return {
                     "pattern_type": pattern_type_name,
                     "corners": corners,
@@ -322,24 +342,28 @@ class PatternRecognitionModule:
                     "features": features.cpu().numpy().squeeze(),
                     "num_pattern_pieces": len(contours),
                 }
-            
+
         except Exception as e:
             print(f"Error during pattern processing: {e}")
-            
+
             # Fallback using traditional CV methods
             gray = cv2.cvtColor(pattern_image_copy, cv2.COLOR_BGR2GRAY)
             edges = cv2.Canny(gray, 50, 150)
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
+            contours, _ = cv2.findContours(
+                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
             # Create a minimal contour if none found
             if len(contours) == 0:
                 h, w = pattern_image_copy.shape[:2]
-                simple_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32)
+                simple_contour = np.array(
+                    [[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32
+                )
                 contours = [simple_contour]
-            
+
             # Get basic dimensions
             dimensions = self.extract_dimensions(pattern_image_copy)
-            
+
             return {
                 "pattern_type": "unknown",
                 "corners": None,

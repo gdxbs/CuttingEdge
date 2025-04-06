@@ -4,7 +4,9 @@
 
 Cutting Edge is a computer vision system that analyzes garment patterns and cloth materials using deep learning. The system helps in garment manufacturing by recognizing pattern types, detecting key features, and estimating dimensions for optimal pattern placement on cloth materials to minimize waste.
 
-The system uses Hierarchical Reinforcement Learning to optimize pattern placement, resulting in better material utilization and reduced fabric waste during garment production.
+The system uses Hierarchical Reinforcement Learning to optimize pattern placement, resulting in better material utilization and reduced fabric waste during garment production. By combining advanced computer vision techniques with reinforcement learning, it creates an end-to-end solution for the garment manufacturing process.
+
+As outlined in the [ISSUES.md](ISSUES.md) file, this project is in active development with completed modules for pattern recognition, cloth recognition, and pattern fitting, while further work is needed on dataset integration, training pipeline improvements, and comprehensive test suites.
 
 ![Pattern Fitting Process](output/pattern_fitting_result.png)
 
@@ -119,6 +121,19 @@ source .venv/bin/activate  # Unix
 uv pip install -e ".[dev]"
 ```
 
+### Dependencies
+
+This project requires:
+- Python 3.9+
+- PyTorch 2.1.2+ and torchvision 0.16.2+
+- OpenCV 4.9.0+
+- Segmentation Models PyTorch 0.4.0+
+- Gymnasium 1.1.1+
+- Stable-Baselines3 2.6.0+
+- Shapely 2.0.7+
+
+For a full list of dependencies, see the `pyproject.toml` file.
+
 To exit the environment:
 
 ```bash
@@ -198,6 +213,12 @@ ruff check .
 mypy .
 ```
 
+The project follows the coding standards documented in `CLAUDE.md`:
+- Black for formatting (88 character line length)
+- Type annotations for all functions and classes
+- Docstrings for all functions and classes
+- Detailed comments for complex logic, with references to papers/sources
+
 ## Technical Details
 
 ### Pattern Recognition Pipeline
@@ -243,7 +264,14 @@ This project is under active development. Current status:
 - ⏳ Training Pipeline - Partially Complete
 - ⏳ Test Suite - In Progress
 
-See [ISSUES.md](ISSUES.md) for a detailed list of completed and remaining tasks.
+### High Priority Issues
+
+- **Fix Dataset Structure Mismatch**: Update the dataset loader code to match the GarmentCodeData_v2 structure
+- **Complete Pattern Recognition Module**: Finish corner detection functionality and validation metrics
+- **Implement Smart Placement Algorithm (HRL Module)**: Enhance pattern placement optimization
+- **Create Comprehensive Test Suite**: Add unit and integration tests for all modules
+
+See [ISSUES.md](ISSUES.md) for a complete list of completed and remaining tasks.
 
 ## Scientific Foundation
 

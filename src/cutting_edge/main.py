@@ -4,8 +4,8 @@ import os
 from typing import Dict, List, Optional
 
 import cv2
-import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -31,45 +31,82 @@ References:
 - "Planning Irregular Object Packing via Hierarchical Reinforcement Learning" (Wang et al., 2022)
 """
 
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Cutting Edge Pattern Recognition")
 
     # Dataset and model paths
-    parser.add_argument("--dataset_path", type=str, default=None, 
-                        help="Path to GarmentCodeData dataset")
-    parser.add_argument("--pattern_model_path", type=str, 
-                        default="models/pattern_recognition_model.pth",
-                        help="Path to save/load pattern recognition model")
-    parser.add_argument("--fitting_model_path", type=str, 
-                        default="models/pattern_fitting_model.pth",
-                        help="Path to save/load pattern fitting model")
+    parser.add_argument(
+        "--dataset_path", type=str, default=None, help="Path to GarmentCodeData dataset"
+    )
+    parser.add_argument(
+        "--pattern_model_path",
+        type=str,
+        default="models/pattern_recognition_model.pth",
+        help="Path to save/load pattern recognition model",
+    )
+    parser.add_argument(
+        "--fitting_model_path",
+        type=str,
+        default="models/pattern_fitting_model.pth",
+        help="Path to save/load pattern fitting model",
+    )
 
     # Mode selection
-    parser.add_argument("--train", action="store_true", 
-                        help="Train the model even if it exists")
-    parser.add_argument("--train_fitting", action="store_true", 
-                        help="Train the pattern fitting model")
-    parser.add_argument("--epochs", type=int, default=1, 
-                        help="Number of training epochs")
-    parser.add_argument("--fitting_episodes", type=int, default=1,
-                        help="Number of fitting training episodes")
+    parser.add_argument(
+        "--train", action="store_true", help="Train the model even if it exists"
+    )
+    parser.add_argument(
+        "--train_fitting", action="store_true", help="Train the pattern fitting model"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=1, help="Number of training epochs"
+    )
+    parser.add_argument(
+        "--fitting_episodes",
+        type=int,
+        default=1,
+        help="Number of fitting training episodes",
+    )
 
     # Input files for inference
-    parser.add_argument("--pattern_image", type=str, default=None,
-                        help="Path to input pattern image for inference")
-    parser.add_argument("--cloth_image", type=str, default=None,
-                        help="Path to input cloth image for inference")
-    parser.add_argument("--multi_pattern", action="store_true",
-                        help="Process multiple pattern images for fitting")
-    parser.add_argument("--pattern_dir", type=str, default=None,
-                        help="Directory containing multiple pattern images")
+    parser.add_argument(
+        "--pattern_image",
+        type=str,
+        default=None,
+        help="Path to input pattern image for inference",
+    )
+    parser.add_argument(
+        "--cloth_image",
+        type=str,
+        default=None,
+        help="Path to input cloth image for inference",
+    )
+    parser.add_argument(
+        "--multi_pattern",
+        action="store_true",
+        help="Process multiple pattern images for fitting",
+    )
+    parser.add_argument(
+        "--pattern_dir",
+        type=str,
+        default=None,
+        help="Directory containing multiple pattern images",
+    )
 
     # Visualization options
-    parser.add_argument("--visualize", action="store_true",
-                        help="Generate visualization for pattern fitting")
-    parser.add_argument("--output_dir", type=str, default="output",
-                        help="Directory to save output visualizations")
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate visualization for pattern fitting",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="output",
+        help="Directory to save output visualizations",
+    )
 
     return parser.parse_args()
 
@@ -86,7 +123,9 @@ def initialize_pattern_recognizer(args: argparse.Namespace) -> PatternRecognitio
     """Initialize and optionally train the pattern recognition module"""
     logger.info("Initializing pattern recognition module...")
 
-    model_path = args.pattern_model_path if os.path.exists(args.pattern_model_path) else None
+    model_path = (
+        args.pattern_model_path if os.path.exists(args.pattern_model_path) else None
+    )
     pattern_recognizer = PatternRecognitionModule(
         dataset_path=args.dataset_path,
         model_path=model_path,
@@ -104,7 +143,9 @@ def initialize_pattern_recognizer(args: argparse.Namespace) -> PatternRecognitio
     return pattern_recognizer
 
 
-def process_patterns(pattern_recognizer: PatternRecognitionModule, pattern_paths: List[str]) -> List[Dict]:
+def process_patterns(
+    pattern_recognizer: PatternRecognitionModule, pattern_paths: List[str]
+) -> List[Dict]:
     """Process multiple pattern images"""
     patterns_data = []
 
@@ -129,7 +170,9 @@ def process_patterns(pattern_recognizer: PatternRecognitionModule, pattern_paths
     return patterns_data
 
 
-def process_multiple_patterns(args: argparse.Namespace, pattern_recognizer: PatternRecognitionModule) -> Optional[List[Dict]]:
+def process_multiple_patterns(
+    args: argparse.Namespace, pattern_recognizer: PatternRecognitionModule
+) -> Optional[List[Dict]]:
     """Process multiple pattern images from a directory"""
     pattern_dir = args.pattern_dir or os.path.dirname(args.pattern_image)
     if not pattern_dir or not os.path.exists(pattern_dir):
@@ -141,7 +184,7 @@ def process_multiple_patterns(args: argparse.Namespace, pattern_recognizer: Patt
         for f in os.listdir(pattern_dir)
         if f.lower().endswith((".png", ".jpg", ".jpeg"))
     ]
-    
+
     if not pattern_paths:
         logger.error(f"No pattern images found in: {pattern_dir}")
         return None
@@ -154,7 +197,9 @@ def process_multiple_patterns(args: argparse.Namespace, pattern_recognizer: Patt
     return patterns_data
 
 
-def process_single_pattern(args: argparse.Namespace, pattern_recognizer: PatternRecognitionModule) -> Optional[List[Dict]]:
+def process_single_pattern(
+    args: argparse.Namespace, pattern_recognizer: PatternRecognitionModule
+) -> Optional[List[Dict]]:
     """Process a single pattern image and visualize results"""
     if not os.path.exists(args.pattern_image):
         logger.error(f"Pattern image not found: {args.pattern_image}")
@@ -182,7 +227,9 @@ def process_single_pattern(args: argparse.Namespace, pattern_recognizer: Pattern
     return patterns_data
 
 
-def visualize_pattern_results(pattern_image_rgb, pattern_data, output_dir, skip_show=False):
+def visualize_pattern_results(
+    pattern_image_rgb, pattern_data, output_dir, skip_show=False
+):
     """Visualize pattern recognition results"""
     plt.figure(figsize=(15, 10))
 
@@ -232,7 +279,9 @@ def visualize_pattern_results(pattern_image_rgb, pattern_data, output_dir, skip_
         info_text += f"Dimensions: {dimensions[0]:.1f} x {dimensions[1]:.1f}"
 
     plt.text(
-        0.5, 0.5, info_text,
+        0.5,
+        0.5,
+        info_text,
         horizontalalignment="center",
         verticalalignment="center",
         fontsize=12,
@@ -355,7 +404,9 @@ def visualize_training_result(training_result, output_dir):
     """Visualize pattern fitting training results"""
     plt.figure(figsize=(10, 10))
     plt.imshow(training_result["best_state"], cmap="gray")
-    plt.title(f"Best Training Result (Utilization: {training_result['best_utilization']:.4f})")
+    plt.title(
+        f"Best Training Result (Utilization: {training_result['best_utilization']:.4f})"
+    )
     plt.colorbar(label="Pattern Index")
     plt.savefig(os.path.join(output_dir, "training_result.png"))
     plt.show()
@@ -365,14 +416,45 @@ def visualize_training_result(training_result, output_dir):
 def visualize_fitting_result(result, cloth_image, save_path):
     """Visualize pattern fitting results"""
     plt.figure(figsize=(16, 10))
-    
+
     # Define colors for patterns
     colors = ["red", "blue", "green", "purple", "orange", "cyan", "magenta", "yellow"]
-    
+
     # Get canvas dimensions
     canvas = result.get("final_state", np.zeros((400, 400), dtype=int))
-    cloth_width, cloth_height = result.get("cloth_dims", (canvas.shape[1], canvas.shape[0]))
-    
+    cloth_width, cloth_height = result.get(
+        "cloth_dims", (canvas.shape[1], canvas.shape[0])
+    )
+
+    # Get cloth mask for boundary checking from result or cloth_data
+    cloth_mask = None
+    if "visualization_mask" in result and result["visualization_mask"] is not None:
+        # If the mask is already in the result, use it
+        cloth_mask = result.get("visualization_mask")
+        # Resize to match visualization dimensions
+        if cloth_mask is not None:
+            try:
+                cloth_mask = cv2.resize(cloth_mask, (cloth_width, cloth_height))
+            except Exception as e:
+                logger.warning(f"Error resizing cloth mask: {e}")
+    elif cloth_image is not None:
+        # Fallback: create a mask from the image
+        try:
+            # Create a binary mask from the cloth image
+            if len(cloth_image.shape) == 3:
+                # Convert to grayscale if color image
+                gray_cloth = cv2.cvtColor(cloth_image, cv2.COLOR_RGB2GRAY)
+            else:
+                gray_cloth = cloth_image
+
+            # Threshold to get binary mask
+            _, cloth_mask = cv2.threshold(gray_cloth, 10, 255, cv2.THRESH_BINARY)
+
+            # Resize to match the cloth dimensions from result
+            cloth_mask = cv2.resize(cloth_mask, (cloth_width, cloth_height))
+        except Exception as e:
+            logger.warning(f"Error creating cloth mask for visualization: {e}")
+
     # Plot original cloth
     plt.subplot(1, 2, 1)
     if cloth_image is not None:
@@ -381,18 +463,41 @@ def visualize_fitting_result(result, cloth_image, save_path):
         plt.imshow(np.ones((cloth_height, cloth_width, 3)) * 0.8)  # Light gray
     plt.title("Original Cloth")
     plt.axis("off")
-    
+
     # Create overlay visualization
     plt.subplot(1, 2, 2)
-    
+
     # Start with cloth image or blank canvas
     if cloth_image is not None:
-        overlay_img = cloth_image.copy()
-        if len(overlay_img.shape) == 2:
-            overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_GRAY2RGB)
+        # Resize cloth image to match the dimensions from the environment
+        try:
+            overlay_img = cv2.resize(cloth_image.copy(), (cloth_width, cloth_height))
+            if len(overlay_img.shape) == 2:
+                overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_GRAY2RGB)
+
+            # Create background
+            background = (
+                np.ones((cloth_height, cloth_width, 3), dtype=np.uint8) * 240
+            )  # Light gray
+
+            # Create a mask for the cloth part only (255 = cloth, 0 = background)
+            if cloth_mask is not None:
+                # Create binary mask from cloth
+                _, binary_mask = cv2.threshold(cloth_mask, 1, 255, cv2.THRESH_BINARY)
+
+                # Apply the mask - show cloth image only where the mask is non-zero
+                for c in range(3):
+                    background[:, :, c] = np.where(
+                        binary_mask > 0, overlay_img[:, :, c], background[:, :, c]
+                    )
+                overlay_img = background
+        except Exception as e:
+            logger.warning(f"Error preparing overlay image: {e}")
+            # Fallback to blank canvas
+            overlay_img = np.ones((cloth_height, cloth_width, 3), dtype=np.uint8) * 240
     else:
-        overlay_img = np.ones((cloth_height, cloth_width, 3)) * 0.8
-    
+        overlay_img = np.ones((cloth_height, cloth_width, 3), dtype=np.uint8) * 240
+
     # Draw each placed pattern
     for i, placement in enumerate(result.get("placements", [])):
         pattern_idx = placement["pattern_id"]
@@ -400,66 +505,114 @@ def visualize_fitting_result(result, cloth_image, save_path):
         rotation = placement["rotation"]
         color_idx = i % len(colors)
         color = plt.cm.colors.to_rgb(colors[color_idx])
-        
+
         # Get pattern shape
         if pattern_idx < len(result.get("patterns", [])):
             pattern = result["patterns"][pattern_idx]
-            
+
             if "contours" in pattern and pattern["contours"]:
                 # Draw each contour
                 for contour in pattern["contours"]:
                     # Convert to numpy array
                     contour_np = np.array(contour)
-                    
+
                     # Handle reshape if needed
                     if len(contour_np.shape) == 3 and contour_np.shape[1] == 1:
                         contour_np = contour_np.reshape(contour_np.shape[0], 2)
-                    
+
                     # Rotate contour
                     center = np.mean(contour_np, axis=0)
                     angle_rad = np.radians(rotation)
-                    rot_mat = np.array([
-                        [np.cos(angle_rad), -np.sin(angle_rad)],
-                        [np.sin(angle_rad), np.cos(angle_rad)]
-                    ])
+                    rot_mat = np.array(
+                        [
+                            [np.cos(angle_rad), -np.sin(angle_rad)],
+                            [np.sin(angle_rad), np.cos(angle_rad)],
+                        ]
+                    )
                     rotated = np.dot(contour_np - center, rot_mat.T) + center
-                    
+
                     # Translate contour
                     translated = rotated + np.array([pos_x, pos_y])
-                    
-                    # Draw contour on overlay
-                    mask = np.zeros((cloth_height, cloth_width), dtype=np.uint8)
-                    cv2.fillPoly(mask, [translated.astype(np.int32)], 1)
-                    
-                    # Apply color with transparency
-                    for c in range(3):
-                        overlay_img[:,:,c] = np.where(
-                            mask > 0,
-                            overlay_img[:,:,c] * 0.3 + color[c] * 255 * 0.7,
-                            overlay_img[:,:,c]
-                        )
-    
+
+                    # Draw contour on overlay with safety checks
+                    try:
+                        # Create mask with same dimensions as overlay_img
+                        h, w = overlay_img.shape[:2]
+                        mask = np.zeros((h, w), dtype=np.uint8)
+
+                        # Convert to integer and constrain to image bounds
+                        points = translated.astype(np.int32)
+                        points[:, 0] = np.clip(points[:, 0], 0, w - 1)
+                        points[:, 1] = np.clip(points[:, 1], 0, h - 1)
+
+                        # Only draw if we have valid points
+                        if len(points) >= 3:
+                            cv2.fillPoly(mask, [points], 1)
+
+                            # If we have a cloth mask, only draw within the cloth area
+                            if cloth_mask is not None:
+                                # Use a binary cloth mask for proper filtering
+                                binary_mask = cloth_mask.copy()
+                                if np.max(binary_mask) > 1:
+                                    # Normalize to binary 0/1 mask
+                                    _, binary_mask = cv2.threshold(
+                                        binary_mask, 1, 1, cv2.THRESH_BINARY
+                                    )
+                                mask = mask * binary_mask
+
+                            # Apply color with transparency
+                            for c in range(3):
+                                overlay_img[:, :, c] = np.where(
+                                    mask > 0,
+                                    overlay_img[:, :, c] * 0.3 + color[c] * 255 * 0.7,
+                                    overlay_img[:, :, c],
+                                )
+                    except Exception as e:
+                        logger.warning(f"Error drawing contour: {e}")
+
+    # Make a final pass to mask out any pattern fragments outside the cloth
+    if cloth_mask is not None:
+        try:
+            # Create final mask
+            _, final_mask = cv2.threshold(cloth_mask, 1, 1, cv2.THRESH_BINARY)
+
+            # Create a background canvas
+            background = np.ones((cloth_height, cloth_width, 3), dtype=np.uint8) * 240
+
+            # Apply final mask to the overlay image
+            for c in range(3):
+                overlay_img[:, :, c] = np.where(
+                    final_mask > 0, overlay_img[:, :, c], background[:, :, c]
+                )
+        except Exception as e:
+            logger.warning(f"Error in final masking: {e}")
+
     # Display the result
     plt.imshow(overlay_img.astype(np.uint8))
     plt.title(f"Pattern Placement (Utilization: {result['utilization']:.1%})")
     plt.axis("off")
-    
+
     # Add legend
     handles = []
     for i, placement in enumerate(result.get("placements", [])):
         pattern_idx = placement["pattern_id"]
         color_idx = i % len(colors)
-        handles.append(patches.Patch(color=colors[color_idx], label=f"Pattern {pattern_idx}"))
-    
+        handles.append(
+            patches.Patch(color=colors[color_idx], label=f"Pattern {pattern_idx}")
+        )
+
     plt.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left")
     plt.tight_layout()
-    
+
     # Save if path provided
     if save_path:
-        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(save_path) if os.path.dirname(save_path) else ".",
+            exist_ok=True,
+        )
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         logger.info(f"Visualization saved to {save_path}")
-    
+
     # Show the plot
     plt.show()
     plt.close()
@@ -470,20 +623,26 @@ def fit_patterns_to_cloth(args, patterns_data, cloth_data, cloth_image_rgb):
     logger.info("Initializing pattern fitting module...")
 
     # Check if model exists
-    model_path = args.fitting_model_path if os.path.exists(args.fitting_model_path) else None
+    model_path = (
+        args.fitting_model_path if os.path.exists(args.fitting_model_path) else None
+    )
 
     # Initialize pattern fitting module
     pattern_fitter = PatternFittingModule(model_path=model_path)
 
     # Train fitting model if requested
     if args.train_fitting:
-        logger.info(f"Training pattern fitting model for {args.fitting_episodes} episodes...")
+        logger.info(
+            f"Training pattern fitting model for {args.fitting_episodes} episodes..."
+        )
         training_result = pattern_fitter.train(
             cloth_data=cloth_data,
             patterns_data=patterns_data,
             num_episodes=args.fitting_episodes,
         )
-        logger.info(f"Fitting model trained. Best utilization: {training_result['best_utilization']:.4f}")
+        logger.info(
+            f"Fitting model trained. Best utilization: {training_result['best_utilization']:.4f}"
+        )
 
         # Visualize training result
         visualize_training_result(training_result, args.output_dir)
@@ -500,13 +659,15 @@ def fit_patterns_to_cloth(args, patterns_data, cloth_data, cloth_image_rgb):
     fitting_result["patterns"] = patterns_data
 
     # Visualize fitting result
-    logger.info(f"Pattern fitting complete. Utilization: {fitting_result['utilization']:.4f}")
+    logger.info(
+        f"Pattern fitting complete. Utilization: {fitting_result['utilization']:.4f}"
+    )
     visualize_fitting_result(
         result=fitting_result,
-        cloth_image=cloth_image_rgb, 
+        cloth_image=cloth_image_rgb,
         save_path=os.path.join(args.output_dir, "pattern_fitting_result.png"),
     )
-    
+
     return fitting_result
 
 
@@ -545,8 +706,12 @@ def main():
 
         # If both pattern and cloth are provided, perform pattern fitting
         if patterns_data and cloth_data and cloth_image_rgb is not None:
-            result = fit_patterns_to_cloth(args, patterns_data, cloth_data, cloth_image_rgb)
-            logger.info(f"Successfully placed {len(result['placements'])} patterns with {result['utilization']:.2%} utilization")
+            result = fit_patterns_to_cloth(
+                args, patterns_data, cloth_data, cloth_image_rgb
+            )
+            logger.info(
+                f"Successfully placed {len(result['placements'])} patterns with {result['utilization']:.2%} utilization"
+            )
 
     except FileNotFoundError as e:
         logger.error(f"Required file not found: {e}")
@@ -556,6 +721,7 @@ def main():
         logger.error(f"Unexpected error: {e}")
         # Print stack trace for debugging
         import traceback
+
         traceback.print_exc()
 
 
