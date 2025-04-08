@@ -23,8 +23,12 @@ class PatternCNN(nn.Module):
 
     def __init__(self, num_classes, pretrained=True):  # Added num_classes parameter
         super().__init__()
-        # Load pretrained ResNet50
-        resnet = models.resnet50(pretrained=pretrained)
+        # Load ResNet50 with appropriate weights
+        if pretrained:
+            from torchvision.models import ResNet50_Weights
+            resnet = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+        else:
+            resnet = models.resnet50(weights=None)
         # Use all layers except the last FC layer
         self.features = nn.Sequential(*list(resnet.children())[:-1])
         # Add our own FC layer with the specified number of classes
@@ -77,8 +81,9 @@ class PatternRecognitionModule:
         # REF: "Deep Residual Learning for Image Recognition" (He et al., 2016)
         # https://arxiv.org/abs/1512.03385
         # Initialize with 1 class as default (will be updated in _initialize_dataset if dataset provided)
-        self.cnn = PatternCNN(num_classes=1, pretrained=True)
-
+        self.cnn = PatternCNN(num_classes=1, pretrained=True)  # pretrained now uses weights=ResNet50_Weights.IMAGENET1K_V1
+        self.cnn = self.cnn.to(self.device)  # Move to device immediately
+        
         # LSTM for corner detection (sequence modeling of pattern structure)
         # Bidirectional LSTM processes feature sequences to detect pattern corners
         # The architecture follows the approach described in:
@@ -90,7 +95,10 @@ class PatternRecognitionModule:
             num_layers=2,  # Number of LSTM layers for better sequence modeling
             bidirectional=True,  # Bidirectional to consider context in both directions
         )
-        self.dimension_predictor = None  # Will be initialized based on dataset
+        self.corner_lstm = self.corner_lstm.to(self.device)  # Move to device immediately
+        
+        # Dimension predictor will be initialized and moved to device if dataset is provided
+        self.dimension_predictor = None
 
         # Initialize dataset components (populated in _initialize_dataset if path provided)
         self.dataset_loader = None
@@ -129,7 +137,7 @@ class PatternRecognitionModule:
         # Replace the final fully connected layer of ResNet50 with a new one
         # that outputs the correct number of classes for our specific dataset
         num_pattern_types = len(self.train_dataset.pattern_types)
-        self.cnn = PatternCNN(num_classes=num_pattern_types)
+        self.cnn = PatternCNN(num_classes=num_pattern_types, pretrained=True)
 
         # Initialize dimension predictor network
         # This MLP takes ResNet features and predicts pattern dimensions (width, height)
@@ -646,8 +654,18 @@ class PatternRecognitionModule:
     def load_model(self, model_path: str):
         """Load model weights from the given path"""
         checkpoint = torch.load(model_path, map_location=self.device)
+        
+        # Move models to device first to ensure consistency
+        self.cnn = self.cnn.to(self.device)
+        self.corner_lstm = self.corner_lstm.to(self.device)
+        if self.dimension_predictor:
+            self.dimension_predictor = self.dimension_predictor.to(self.device)
+            
+        # Load state dicts
         self.cnn.load_state_dict(checkpoint["cnn"])
         self.corner_lstm.load_state_dict(checkpoint["lstm"])
-        if self.dimension_predictor:
+        if self.dimension_predictor and "dim_predictor" in checkpoint:
             self.dimension_predictor.load_state_dict(checkpoint["dim_predictor"])
-        self.best_accuracy = checkpoint["accuracy"]
+            
+        # Set best accuracy if available
+        self.best_accuracy = checkpoint.get("accuracy", 0)

@@ -412,8 +412,17 @@ def visualize_cloth_results(
     save_path = os.path.join(output_dir, "cloth_detection_results.png")
     plt.savefig(save_path)
     logger.info(f"Visualization saved to: {save_path}")
+    
     if not skip_show:
-        plt.show()
+        # Check if running in an interactive environment
+        import matplotlib
+        if matplotlib.is_interactive() and hasattr(plt, '_get_backend') and plt._get_backend() != 'agg':
+            try:
+                plt.show()
+            except Exception as e:
+                logger.warning(f"Could not display plot: {e}")
+                logger.info("Plot saved to file instead")
+    
     plt.close()  # Close the figure to free memory
 
 
