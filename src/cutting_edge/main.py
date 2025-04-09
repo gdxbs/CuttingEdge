@@ -9,6 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from cutting_edge.config import (
+    DATASET,
+    IMAGE_PROCESSING,
+    MODEL,
+    PATTERN_FITTING,
+    TRAINING,
+    VISUALIZATION,
+)
 from cutting_edge.cloth_recognition_module import ClothRecognitionModule
 from cutting_edge.pattern_fitting_module import PatternFittingModule
 from cutting_edge.pattern_recognition_module import PatternRecognitionModule
@@ -61,12 +69,12 @@ def parse_arguments() -> argparse.Namespace:
         "--train_fitting", action="store_true", help="Train the pattern fitting model"
     )
     parser.add_argument(
-        "--epochs", type=int, default=1, help="Number of training epochs"
+        "--epochs", type=int, default=TRAINING["DEFAULT_EPOCHS"], help="Number of training epochs"
     )
     parser.add_argument(
         "--fitting_episodes",
         type=int,
-        default=1,
+        default=PATTERN_FITTING["MAX_FAILURES"],
         help="Number of fitting training episodes",
     )
 
@@ -231,7 +239,7 @@ def visualize_pattern_results(
     pattern_image_rgb, pattern_data, output_dir, skip_show=False
 ):
     """Visualize pattern recognition results"""
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=VISUALIZATION["FIGURE_SIZE"])
 
     # Original image
     plt.subplot(231)
@@ -241,7 +249,7 @@ def visualize_pattern_results(
     # Draw contours on the pattern image
     if "contours" in pattern_data and pattern_data["contours"]:
         contour_img = pattern_image_rgb.copy()
-        cv2.drawContours(contour_img, pattern_data["contours"], -1, (0, 255, 0), 2)
+        cv2.drawContours(contour_img, pattern_data["contours"], -1, VISUALIZATION["CONTOUR_COLOR"], 2)
         plt.subplot(232)
         plt.imshow(contour_img)
         plt.title("Detected Pattern Contours")
@@ -263,7 +271,7 @@ def visualize_pattern_results(
 
         # Create a filled contour visualization
         filled_vis = np.zeros_like(pattern_image_rgb)
-        cv2.drawContours(filled_vis, pattern_data["contours"], -1, (0, 255, 0), -1)
+        cv2.drawContours(filled_vis, pattern_data["contours"], -1, VISUALIZATION["CONTOUR_COLOR"], -1)
         # Add transparency for better visualization
         overlay = cv2.addWeighted(pattern_image_rgb, 1, filled_vis, 0.5, 0)
         plt.subplot(235)
@@ -291,7 +299,7 @@ def visualize_pattern_results(
     plt.title("Pattern Information")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "pattern_detection.png"))
+    plt.savefig(os.path.join(output_dir, "pattern_detection.png"), dpi=VISUALIZATION["DPI"])
     if not skip_show:
         plt.show()
     plt.close()
@@ -341,7 +349,7 @@ def process_cloth_image(args: argparse.Namespace):
 def visualize_cloth_results(cloth_image_rgb, cloth_data, output_dir, skip_show=False):
     """Visualize cloth recognition results"""
     os.makedirs(output_dir, exist_ok=True)
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=VISUALIZATION["FIGURE_SIZE"])
 
     # Original image
     plt.subplot(231)
@@ -357,7 +365,7 @@ def visualize_cloth_results(cloth_image_rgb, cloth_data, output_dir, skip_show=F
     # Contours on the original image
     contour_img = cloth_image_rgb.copy()
     if cloth_data.get("contours"):
-        cv2.drawContours(contour_img, cloth_data["contours"], -1, (0, 255, 0), 2)
+        cv2.drawContours(contour_img, cloth_data["contours"], -1, VISUALIZATION["CONTOUR_COLOR"], 2)
     plt.subplot(233)
     plt.imshow(contour_img)
     plt.title("Cloth Contours")
@@ -379,7 +387,7 @@ def visualize_cloth_results(cloth_image_rgb, cloth_data, output_dir, skip_show=F
         seg_img = cloth_data["segmented_image"]
         if seg_img.ndim == 3 and seg_img.shape[0] == 1:
             seg_img = seg_img.squeeze(0)
-        plt.imshow(seg_img, cmap="viridis")
+        plt.imshow(seg_img, cmap=VISUALIZATION["COLOR_MAP"])
         plt.title("Semantic Segmentation")
     else:
         plt.text(
@@ -393,7 +401,7 @@ def visualize_cloth_results(cloth_image_rgb, cloth_data, output_dir, skip_show=F
 
     plt.tight_layout()
     save_path = os.path.join(output_dir, "cloth_detection_results.png")
-    plt.savefig(save_path)
+    plt.savefig(save_path, dpi=VISUALIZATION["DPI"])
     logger.info(f"Visualization saved to: {save_path}")
     if not skip_show:
         plt.show()
@@ -402,23 +410,23 @@ def visualize_cloth_results(cloth_image_rgb, cloth_data, output_dir, skip_show=F
 
 def visualize_training_result(training_result, output_dir):
     """Visualize pattern fitting training results"""
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=VISUALIZATION["FIGURE_SIZE"])
     plt.imshow(training_result["best_state"], cmap="gray")
     plt.title(
         f"Best Training Result (Utilization: {training_result['best_utilization']:.4f})"
     )
     plt.colorbar(label="Pattern Index")
-    plt.savefig(os.path.join(output_dir, "training_result.png"))
+    plt.savefig(os.path.join(output_dir, "training_result.png"), dpi=VISUALIZATION["DPI"])
     plt.show()
     plt.close()
 
 
 def visualize_fitting_result(result, cloth_image, save_path):
     """Visualize pattern fitting results"""
-    plt.figure(figsize=(16, 10))
+    plt.figure(figsize=VISUALIZATION["FIGURE_SIZE"])
 
     # Define colors for patterns
-    colors = ["red", "blue", "green", "purple", "orange", "cyan", "magenta", "yellow"]
+    colors = VISUALIZATION["PATTERN_COLORS"]
 
     # Get canvas dimensions
     canvas = result.get("final_state", np.zeros((400, 400), dtype=int))
@@ -610,7 +618,7 @@ def visualize_fitting_result(result, cloth_image, save_path):
             os.path.dirname(save_path) if os.path.dirname(save_path) else ".",
             exist_ok=True,
         )
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=VISUALIZATION["DPI"], bbox_inches="tight")
         logger.info(f"Visualization saved to {save_path}")
 
     # Show the plot
