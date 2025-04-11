@@ -328,6 +328,16 @@ def process_cloth_image(args: argparse.Namespace):
     if cloth_data.get("error"):
         logger.error(f"Processing failed with error: {cloth_data['error']}")
 
+    # Add width and height keys for pattern fitting module
+    # Ensure dimensions are positive and reasonable
+    width = max(1, abs(int(cloth_data["dimensions"][0])))
+    height = max(1, abs(int(cloth_data["dimensions"][1])))
+    cloth_data["width"] = width
+    cloth_data["height"] = height
+    
+    # Update dimensions for consistency
+    cloth_data["dimensions"] = np.array([width, height], dtype=np.float32)
+
     # Log dimensions
     logger.info(f"Cloth dimensions (WxH): {cloth_data['dimensions']}")
     logger.info(f"Cloth area (pixels): {cloth_data['area']:.2f}")
@@ -509,7 +519,7 @@ def visualize_fitting_result(result, cloth_image, save_path):
     # Draw each placed pattern
     for i, placement in enumerate(result.get("placements", [])):
         pattern_idx = placement["pattern_id"]
-        pos_x, pos_y = placement["position"]
+        pos_x, pos_y = placement["x"], placement["y"]
         rotation = placement["rotation"]
         color_idx = i % len(colors)
         color = plt.cm.colors.to_rgb(colors[color_idx])

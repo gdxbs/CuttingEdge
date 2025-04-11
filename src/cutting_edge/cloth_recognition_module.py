@@ -7,6 +7,7 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import shapely.geometry as sg
 
 from cutting_edge.config import (
     IMAGE_PROCESSING,
@@ -134,22 +135,24 @@ class ClothRecognitionModule:
             gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, IMAGE_PROCESSING["MORPH_KERNEL_SIZE"], 0)
 
-            # 2. Apply adaptive thresholding for better handling of varying lighting conditions
-            initial_mask = cv2.adaptiveThreshold(
+            # 2. Apply Otsu thresholding for more reliable cloth extraction
+            _, initial_mask = cv2.threshold(
                 blurred,
+                0,
                 255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY_INV,
-                IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_BLOCK_SIZE"],
-                IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_C"]
+                cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
 
             # 3. Clean up the mask with morphological operations
-            kernel_open = np.ones(IMAGE_PROCESSING["MORPH_KERNEL_SIZE"], np.uint8)
-            kernel_close = np.ones((7, 7), np.uint8)
-            cleaned_mask = cv2.morphologyEx(initial_mask, cv2.MORPH_OPEN, kernel_open)
+            kernel_open = np.ones((5, 5), np.uint8)
+            kernel_close = np.ones((15, 15), np.uint8)
+            
+            # First dilate to make sure the cloth is fully captured
+            dilated_mask = cv2.dilate(initial_mask, kernel_open, iterations=2)
+            
+            # Then close gaps and holes
             cleaned_mask = cv2.morphologyEx(
-                cleaned_mask, cv2.MORPH_CLOSE, kernel_close, 
+                dilated_mask, cv2.MORPH_CLOSE, kernel_close, 
                 iterations=IMAGE_PROCESSING["MORPH_CLOSE_ITERATIONS"]
             )
 
@@ -171,6 +174,12 @@ class ClothRecognitionModule:
                 # Create cloth mask
                 final_cloth_mask = np.zeros_like(gray)
                 cv2.drawContours(final_cloth_mask, [main_contour], -1, 255, -1)
+                
+                # Fill any small holes in the mask
+                kernel = np.ones((5, 5), np.uint8)
+                final_cloth_mask = cv2.morphologyEx(final_cloth_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+                
+                # Store the mask
                 results["cloth_mask"] = final_cloth_mask
 
                 # Calculate area
@@ -205,11 +214,15 @@ class ClothRecognitionModule:
 
             # 7. Generate edge detection for visualization
             if np.any(results["cloth_mask"]):
-                results["edges"] = cv2.Canny(
+                # Use dilated edges for better visibility
+                edges = cv2.Canny(
                     results["cloth_mask"], 
                     IMAGE_PROCESSING["EDGE_DETECTION_LOW"], 
                     IMAGE_PROCESSING["EDGE_DETECTION_HIGH"]
                 )
+                # Dilate edges to make them more visible
+                edge_kernel = np.ones((3, 3), np.uint8)
+                results["edges"] = cv2.dilate(edges, edge_kernel, iterations=1)
             else:
                 results["edges"] = np.zeros_like(gray)
 
@@ -247,5 +260,29 @@ class ClothRecognitionModule:
             except Exception as fallback_e:
                 logger.error(f"Error during fallback processing: {fallback_e}")
                 results["error"] = f"Main error: {e}; Fallback error: {fallback_e}"
-
+        
         return results
+
+    def _filter_contours(self, contours: List[np.ndarray]) -> List[np.ndarray]:
+        """Filter contours based on area, perimeter, and shape criteria"""
+        filtered_contours = []
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            perimeter = cv2.arcLength(contour, True)
+            
+            # Skip contours that are too small
+            if area < IMAGE_PROCESSING["CONTOUR_MIN_AREA"] or perimeter < IMAGE_PROCESSING["CONTOUR_MIN_PERIMETER"]:
+                continue
+                
+            # Approximate the contour to reduce noise and simplify shape
+            epsilon = IMAGE_PROCESSING["CONTOUR_APPROX_EPSILON"] * perimeter
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            
+            # Skip if approximation has too many points (likely noise)
+            if len(approx) > IMAGE_PROCESSING["CONTOUR_MAX_APPROX_POINTS"]:
+                continue
+                
+            filtered_contours.append(contour)
+            
+        return filtered_contours

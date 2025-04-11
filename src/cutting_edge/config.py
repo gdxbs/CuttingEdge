@@ -53,7 +53,6 @@ TRAINING = {
     "LEARNING_RATE": 0.001,  # Learning rate for optimizers
     "DEFAULT_EPOCHS": 50,  # Default number of training epochs
     "NUM_WORKERS": 4,  # Number of workers for data loading
-    "VALIDATION_SPLIT": 0.2,  # Validation split ratio
     "EARLY_STOPPING_PATIENCE": 5,  # Patience for early stopping
     "WEIGHT_DECAY": 0.0001,  # Weight decay for regularization
     "GRADIENT_CLIP_NORM": 1.0,  # Gradient clipping norm
@@ -78,20 +77,23 @@ AUGMENTATION = {
 PATTERN_FITTING = {
     "ROTATION_ANGLES": [0, 90, 180, 270],  # Allowed rotation angles
     "GRID_SIZE": 32,  # Size of the grid for pattern placement
-    "MARGIN": 10,  # Margin around patterns
     "MAX_FAILURES": 100,  # Maximum number of placement failures
-    "INVALID_PLACEMENT_PENALTY": -1.0,  # Penalty for invalid placements
-    "SMALL_PENALTY": -0.5,  # Penalty for small placements
-    "SMALL_REWARD": 0.1,  # Reward for successful small placements
     "MAX_POSITIONS_TO_TRY": 100,  # Maximum positions to try for placement
-    "MIN_OVERLAP_RATIO": 0.1,  # Minimum overlap ratio for valid placement
-    "REWARD_SCALING": 1.0,  # Scaling factor for rewards
-    "PATTERN_SCALE_FACTOR": 0.2,  # Scale factor for pattern dimensions
+    "PATTERN_SCALE_FACTOR": 0.5,  # Scale factor for pattern dimensions
     "PATTERN_MARGIN_X": 0.1,  # X-axis margin for pattern placement
     "PATTERN_MARGIN_Y": 0.1,  # Y-axis margin for pattern placement
     "MAX_STEPS": 50,  # Maximum steps per episode
     "MAX_INFERENCE_STEPS": 1000,  # Maximum steps during inference
     "MAX_FAILURES_BEFORE_MANUAL": 10,  # Maximum failures before manual placement
+    "CLOTH_BOUNDARY_MARGIN": 0.9,  # Percentage of cloth to use for boundary margins
+    "MIN_PATTERN_COVERAGE": 0.95,  # Minimum percentage of pattern that must be within cloth
+    "DEFAULT_CLOTH_WIDTH": 512,  # Default cloth width
+    "DEFAULT_CLOTH_HEIGHT": 512,  # Default cloth height
+    "MIN_PATTERN_WIDTH_RATIO": 0.05,  # Minimum pattern width as ratio of cloth width
+    "MIN_PATTERN_HEIGHT_RATIO": 0.05,  # Minimum pattern height as ratio of cloth height
+    "GRID_SAMPLE_SIZE": 100,  # Number of sample points for grid placement
+    "SPIRAL_ANGLE_STEP": 15,  # Angle step for spiral pattern placement
+    "SPIRAL_RADIUS_STEP": 0.1,  # Radius step for spiral pattern placement as ratio of max radius
 }
 
 # Visualization Constants
@@ -101,35 +103,21 @@ VISUALIZATION = {
     "COLOR_MAP": "viridis",  # Default color map
     "CONTOUR_COLOR": (0, 255, 0),  # Color for contours (BGR)
     "EDGE_COLOR": (0, 0, 255),  # Color for edges (BGR)
-    "TEXT_COLOR": (255, 255, 255),  # Color for text (BGR)
-    "BACKGROUND_COLOR": (240, 240, 240),  # Background color (BGR)
     "PATTERN_COLORS": [  # Colors for different patterns
-        "red", "blue", "green", "purple", "orange",
-        "cyan", "magenta", "yellow", "pink", "brown"
+        "red", "yellow", "green", "purple", "orange",
+        "cyan", "magenta", "blue", "pink", "brown"
     ],
 }
 
 # Environment Constants
 ENVIRONMENT = {
     "DEVICE": "cuda",  # Default device for PyTorch
-    "RANDOM_SEED": 42,  # Random seed for reproducibility
     "LOG_LEVEL": "INFO",  # Default logging level
     "TENSORBOARD_LOG_DIR": "./logs/",  # Directory for tensorboard logs
-    "MODEL_SAVE_DIR": "models/",  # Directory for saving models
-    "DATA_DIR": "data/",  # Directory for data
-    "OUTPUT_DIR": "outputs/",  # Directory for outputs
 }
 
 # Dataset Constants
 DATASET = {
-    "TRAIN_RATIO": 0.7,  # Training data ratio
-    "VAL_RATIO": 0.15,  # Validation data ratio
-    "TEST_RATIO": 0.15,  # Test data ratio
-    "RANDOM_SEED": 42,  # Random seed for reproducibility
-    "AUGMENTATION_PROB": 0.5,  # Probability of augmentation
-    "MAX_PATTERNS_PER_CLOTH": 10,  # Maximum patterns per cloth
-    "MIN_PATTERN_SIZE": 32,  # Minimum pattern size
-    "MAX_PATTERN_SIZE": 512,  # Maximum pattern size
     "DEFAULT_PATTERN_DIMENSIONS": [256, 256],  # Default pattern dimensions
     "DEFAULT_IMAGE_SIZE": (512, 512),  # Default image size for preprocessing
     "DEFAULT_EMPTY_IMAGE": (3, 512, 512),  # Default empty image dimensions
