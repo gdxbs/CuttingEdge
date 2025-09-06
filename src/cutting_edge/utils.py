@@ -5,7 +5,12 @@ import torchvision.transforms as transforms
 from cutting_edge.config import IMAGE_PROCESSING
 
 
-def preprocess_image_for_model(image, device=None, is_cv2_image=True, size=IMAGE_PROCESSING["DEFAULT_PREPROCESS_SIZE"]):
+def preprocess_image_for_model(
+    image,
+    device=None,
+    is_cv2_image=True,
+    size=IMAGE_PROCESSING["DEFAULT_PREPROCESS_SIZE"],
+):
     """Preprocess image for model input
 
     Standard preprocessing pipeline for both cloth and pattern images:
@@ -100,9 +105,12 @@ def extract_contours(image, min_area_ratio=IMAGE_PROCESSING["MIN_AREA_RATIO"]):
     # Try adaptive thresholding if no good contours found
     if not filtered_contours:
         binary_adaptive = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 
-            IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_BLOCK_SIZE"], 
-            IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_C"]
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_BLOCK_SIZE"],
+            IMAGE_PROCESSING["ADAPTIVE_THRESHOLD_C"],
         )
         binary_adaptive = cv2.morphologyEx(binary_adaptive, cv2.MORPH_OPEN, kernel)
         binary_adaptive = cv2.morphologyEx(binary_adaptive, cv2.MORPH_CLOSE, kernel)
@@ -118,7 +126,9 @@ def extract_contours(image, min_area_ratio=IMAGE_PROCESSING["MIN_AREA_RATIO"]):
 
     # Fallback to simple rectangle if no contours found
     h, w = gray.shape[:2]
-    margin_x, margin_y = int(w * IMAGE_PROCESSING["MARGIN_RATIO"]), int(h * IMAGE_PROCESSING["MARGIN_RATIO"])
+    margin_x, margin_y = int(w * IMAGE_PROCESSING["MARGIN_RATIO"]), int(
+        h * IMAGE_PROCESSING["MARGIN_RATIO"]
+    )
     simple_contour = np.array(
         [
             [[margin_x, margin_y]],

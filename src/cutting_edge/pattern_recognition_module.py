@@ -1,585 +1,421 @@
+"""
+Pattern Recognition Module
+
+Handles pattern detection, classification, and feature extraction.
+Balances simplicity with functionality.
+"""
+
+import logging
 import os
-from typing import Dict, Optional, List, Tuple
-import time
+import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from cutting_edge.config import (
-    DATASET,
-    IMAGE_PROCESSING,
-    MODEL,
-    TRAINING,
-    VISUALIZATION,
-    AUGMENTATION,
+from .config import IMAGENET_NORMALIZE, PATTERN, SYSTEM
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, SYSTEM["LOG_LEVEL"]), format=SYSTEM["LOG_FORMAT"]
 )
-from cutting_edge.dataset import DatasetLoader, PatternDataset
-from cutting_edge.utils import extract_contours, preprocess_image_for_model
+logger = logging.getLogger(__name__)
 
 
-class PatternCNN(nn.Module):
-    """Pattern CNN for feature extraction and classification
-
-    Uses ResNet50 as backbone for feature extraction and adds
-    a classification layer for pattern types.
+@dataclass
+class Pattern:
+    """
+    Data class to represent a garment pattern with all its properties.
+    This is the unified format for patterns throughout the system.
     """
 
-    def __init__(self, num_classes, pretrained=True):
-        super().__init__()
-        # Load pretrained ResNet50
-        resnet = models.resnet50(pretrained=pretrained)
-        # Use all layers except the last FC layer
-        self.features = nn.Sequential(*list(resnet.children())[:-1])
-        # Add our own FC layer
-        self.fc = nn.Linear(MODEL["DEFAULT_FLATTENED_SIZE"], num_classes)
+    id: int  # Unique identifier
+    name: str  # Pattern name (typically from filename)
+    pattern_type: str  # Type (shirt, pants, etc.)
+    width: float  # Width in cm
+    height: float  # Height in cm
+    area: float  # Area in cm²
+    contour: np.ndarray  # Shape outline points
+    confidence: float = 1.0  # Confidence in classification
+    key_points: List[Tuple[float, float]] = None  # Important feature points
 
-    def forward(self, x):
-        # Extract features
-        features = self.features(x)
-        features_flat = torch.flatten(features, 1)
-        # Pass through FC layer
-        x = self.fc(features_flat)
-        return x, features_flat
+
+class PatternRecognizer(nn.Module):
+    """
+    Neural network that handles pattern classification and dimension estimation.
+    Uses either a simple CNN or pretrained backbone depending on config.
+    """
+
+    def __init__(self, num_classes: int = len(PATTERN["TYPES"])):
+        super().__init__()
+        self.backbone_type = PATTERN["BACKBONE"]
+        self.feature_dim = PATTERN["FEATURE_DIM"]
+        self.num_classes = num_classes
+
+        # Initialize neural network
+        self.backbone, self.feature_dim = self._create_backbone()
+
+        # Pattern type classifier
+        self.classifier = nn.Linear(self.feature_dim, num_classes)
+
+        # Dimension estimator (width/height)
+        self.dimension_estimator = nn.Sequential(
+            nn.Linear(self.feature_dim, 128), nn.ReLU(), nn.Linear(128, 2)
+        )
+
+    def _create_backbone(self) -> Tuple[nn.Module, int]:
+        """Create the appropriate feature extraction backbone based on config."""
+        if self.backbone_type == "simple":
+            # Simple CNN backbone for learning purposes
+            backbone = nn.Sequential(
+                nn.Conv2d(3, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(64, 128, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.AdaptiveAvgPool2d((4, 4)),
+                nn.Flatten(),
+            )
+            feature_dim = 128 * 4 * 4
+
+        elif self.backbone_type == "resnet18":
+            # ResNet18 backbone - good balance of performance and size
+            model = models.resnet18(weights="DEFAULT")
+            backbone = nn.Sequential(*list(model.children())[:-1], nn.Flatten())
+            feature_dim = 512
+
+        elif self.backbone_type == "efficientnet-b0":
+            # EfficientNet-B0 - lightweight but powerful
+            model = models.efficientnet_b0(weights="DEFAULT")
+            backbone = nn.Sequential(*list(model.children())[:-1], nn.Flatten())
+            feature_dim = 1280
+
+        else:
+            raise ValueError(f"Unknown backbone type: {self.backbone_type}")
+
+        return backbone, feature_dim
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Forward pass through the neural network."""
+        features = self.backbone(x)
+
+        # Pattern type classification
+        pattern_type = self.classifier(features)
+
+        # Dimension estimation
+        dimensions = self.dimension_estimator(features)
+
+        return {
+            "features": features,
+            "pattern_type": pattern_type,
+            "dimensions": dimensions,
+        }
 
 
 class PatternRecognitionModule:
-    """Module for garment pattern recognition and dimension extraction
-
-    This module analyzes garment patterns in images to:
-    1. Classify pattern type (e.g., shirt, pants, dress)
-    2. Detect corner points for structure analysis
-    3. Estimate pattern dimensions
+    """
+    Main class for pattern recognition that handles:
+    1. Loading and preprocessing pattern images
+    2. Extracting pattern shapes and dimensions
+    3. Pattern type classification
+    4. Model training and inference
     """
 
-    def __init__(
-        self, dataset_path: Optional[str] = None, model_path: Optional[str] = None
-    ):
-        """Initialize the pattern recognition module"""
-        # Set device (GPU if available, otherwise CPU)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Initialize CNN with default single class
-        self.cnn = PatternCNN(num_classes=1, pretrained=True)
-
-        # LSTM for corner detection
-        self.corner_lstm = nn.LSTM(
-            input_size=MODEL["DEFAULT_FLATTENED_SIZE"],
-            hidden_size=MODEL["LSTM_HIDDEN_SIZE"],
-            num_layers=MODEL["LSTM_NUM_LAYERS"],
-            bidirectional=MODEL["LSTM_BIDIRECTIONAL"],
-        )
-
-        # The dimension predictor will be initialized based on the dataset
-        self.dimension_predictor = None
-
-        # Initialize dataset components if path provided
-        self.dataset_loader = None
-        self.train_loader = None
-        self.valid_loader = None
-
-        # Initialize schedulers
-        self.cnn_scheduler = None
-        self.lstm_scheduler = None
-        self.dim_scheduler = None
-
-        # Early stopping parameters
-        self.early_stopping_patience = TRAINING["EARLY_STOPPING_PATIENCE"]
-        self.early_stopping_counter = 0
-        self.early_stopping_min_delta = TRAINING["EARLY_STOPPING_MIN_DELTA"]
-
-        # Checkpoint directory
-        self.checkpoint_dir = TRAINING["CHECKPOINT_DIR"]
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
-
-        if dataset_path:
-            self._initialize_dataset(dataset_path)
-
-        # Load pretrained model if provided
-        if model_path and os.path.exists(model_path):
-            self.load_model(model_path)
-            print(f"Loaded pretrained model from {model_path}")
-        else:
-            print(
-                "No pretrained model found. Will need training if dataset is provided."
+    def __init__(self, model_path: str = None):
+        """Initialize the pattern recognition module."""
+        if model_path is None:
+            model_path = os.path.join(
+                SYSTEM["BASE_DIR"], SYSTEM["MODELS_DIR"], "pattern_model.pth"
             )
 
-    def _initialize_dataset(self, dataset_path: str):
-        """Initialize dataset and modify model architecture"""
-        # Load dataset
-        self.dataset_loader = DatasetLoader(dataset_path)
-        self.train_dataset = PatternDataset(self.dataset_loader, "training")
-        self.valid_dataset = PatternDataset(self.dataset_loader, "validation")
-
-        # Update CNN to have the correct number of classes
-        num_pattern_types = len(self.train_dataset.pattern_types)
-        self.cnn = PatternCNN(num_classes=num_pattern_types)
-
-        # Initialize dimension predictor with batch normalization and dropout
-        self.dimension_predictor = nn.Sequential(
-            nn.Linear(MODEL["DEFAULT_FLATTENED_SIZE"], MODEL["HIDDEN_DIM"]),
-            nn.BatchNorm1d(MODEL["HIDDEN_DIM"]),
-            nn.ReLU(),
-            nn.Dropout(MODEL["DIMENSION_PREDICTOR_DROPOUT_1"]),
-            nn.Linear(MODEL["HIDDEN_DIM"], MODEL["HIDDEN_DIM"] // 2),
-            nn.BatchNorm1d(MODEL["HIDDEN_DIM"] // 2),
-            nn.ReLU(),
-            nn.Dropout(MODEL["DIMENSION_PREDICTOR_DROPOUT_2"]),
-            nn.Linear(MODEL["HIDDEN_DIM"] // 2, 2),  # Width and height
+        self.model_path = model_path
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() and SYSTEM["USE_GPU"] else "cpu"
         )
 
-        # Define data augmentation transforms
-        self.train_transforms = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=AUGMENTATION["RANDOM_HORIZONTAL_FLIP_PROB"]),
-            transforms.RandomRotation(AUGMENTATION["RANDOM_ROTATION_DEGREES"]),
-            transforms.ColorJitter(
-                brightness=AUGMENTATION["COLOR_JITTER_BRIGHTNESS"], 
-                contrast=AUGMENTATION["COLOR_JITTER_CONTRAST"]
-            ),
-            transforms.RandomAffine(
-                degrees=0, 
-                translate=(AUGMENTATION["RANDOM_AFFINE_TRANSLATE"], AUGMENTATION["RANDOM_AFFINE_TRANSLATE"])
-            ),
-        ])
+        # Create neural network
+        self.model = PatternRecognizer()
+        self.model.to(self.device)
 
-        # Create data loaders
-        self.train_loader = torch.utils.data.DataLoader(
-            self.train_dataset,
-            batch_size=TRAINING["BATCH_SIZE"],
-            shuffle=True,
-            num_workers=TRAINING["NUM_WORKERS"],
-            pin_memory=True,
-        )
-        self.valid_loader = torch.utils.data.DataLoader(
-            self.valid_dataset,
-            batch_size=TRAINING["BATCH_SIZE"],
-            num_workers=TRAINING["NUM_WORKERS"],
-            pin_memory=True,
+        # Image preprocessing transforms
+        self.transforms = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=IMAGENET_NORMALIZE["mean"], std=IMAGENET_NORMALIZE["std"]
+                ),
+            ]
         )
 
-        # Move models to device
-        self.cnn = self.cnn.to(self.device)
-        self.corner_lstm = self.corner_lstm.to(self.device)
-        self.dimension_predictor = self.dimension_predictor.to(self.device)
+        # Pattern type mapping
+        self.pattern_types = PATTERN["TYPES"]
 
-        # Initialize optimizers
-        self.cnn_optimizer = optim.Adam(
-            self.cnn.parameters(),
-            lr=TRAINING["LEARNING_RATE"],
-            weight_decay=TRAINING["WEIGHT_DECAY"],
+        logger.info(
+            f"Pattern Recognition Module initialized. Using device: {self.device}"
         )
-        self.lstm_optimizer = optim.Adam(
-            self.corner_lstm.parameters(),
-            lr=TRAINING["LEARNING_RATE"],
-            weight_decay=TRAINING["WEIGHT_DECAY"],
-        )
-        self.dim_optimizer = optim.Adam(
-            self.dimension_predictor.parameters(),
-            lr=TRAINING["LEARNING_RATE"],
-            weight_decay=TRAINING["WEIGHT_DECAY"],
-        )
+        logger.info(f"Using backbone: {PATTERN['BACKBONE']}")
 
-        # Initialize learning rate schedulers
-        self.cnn_scheduler = ReduceLROnPlateau(
-            self.cnn_optimizer, 
-            mode='max', 
-            factor=TRAINING["LR_SCHEDULER_FACTOR"], 
-            patience=TRAINING["LR_SCHEDULER_PATIENCE"], 
-            verbose=True
-        )
-        self.lstm_scheduler = ReduceLROnPlateau(
-            self.lstm_optimizer, 
-            mode='max', 
-            factor=TRAINING["LR_SCHEDULER_FACTOR"], 
-            patience=TRAINING["LR_SCHEDULER_PATIENCE"], 
-            verbose=True
-        )
-        self.dim_scheduler = ReduceLROnPlateau(
-            self.dim_optimizer, 
-            mode='min', 
-            factor=TRAINING["LR_SCHEDULER_FACTOR"], 
-            patience=TRAINING["LR_SCHEDULER_PATIENCE"], 
-            verbose=True
-        )
+    def extract_pattern_shape(self, image_path: str) -> Dict[str, np.ndarray]:
+        """
+        Extract the pattern shape from an image using computer vision.
+        Returns contour and key points.
+        """
+        # Read image
+        img = cv2.imread(image_path)
+        if img is None:
+            logger.error(f"Failed to read image: {image_path}")
+            return {"contour": np.array([]), "key_points": []}
 
-        # Loss functions
-        self.classification_loss = nn.CrossEntropyLoss()
-        self.corner_loss = nn.BCEWithLogitsLoss()
-        self.dimension_loss = nn.MSELoss()
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Training tracking
-        self.best_accuracy = 0
-        self.best_model_state = None
-        self.training_history = {
-            'train_loss': [],
-            'train_acc': [],
-            'val_loss': [],
-            'val_acc': []
-        }
-
-    def check_and_train(self, model_path: str, num_epochs: int = TRAINING["DEFAULT_EPOCHS"]):
-        """Check if model exists, train if it doesn't"""
-        if os.path.exists(model_path):
-            print(f"Loading existing model from {model_path}")
-            self.load_model(model_path)
-        else:
-            if self.dataset_loader is None:
-                raise ValueError(
-                    "Cannot train without dataset. Please initialize with dataset_path."
-                )
-
-            print(f"No existing model found at {model_path}. Starting training...")
-            self.train(num_epochs)
-            self.save_model(model_path)
-            print(f"Model trained and saved to {model_path}")
-
-    def train(self, num_epochs: int):
-        """Train all components of the module"""
-        if self.dataset_loader is None:
-            raise ValueError(
-                "Cannot train without dataset. Please initialize with dataset_path."
-            )
-
-        start_time = time.time()
-        
-        for epoch in range(num_epochs):
-            epoch_start_time = time.time()
-            
-            # Training phase
-            self.cnn.train()
-            self.corner_lstm.train()
-            self.dimension_predictor.train()
-
-            total_loss = 0
-            correct_predictions = 0
-            total_samples = 0
-
-            for batch_idx, batch in enumerate(self.train_loader):
-                images = batch["image"].to(self.device)
-                labels = batch["label"].to(self.device)
-                dimensions = batch["dimensions"].to(self.device)
-
-                # Apply data augmentation
-                if hasattr(self, 'train_transforms'):
-                    # Note: This is a simplified approach. In a real implementation,
-                    # you would need to modify the dataset class to apply transforms
-                    # or use a custom collate function
-                    pass
-
-                # Forward pass through CNN
-                class_output, features = self.cnn(images)
-
-                # Dimension prediction
-                dim_output = self.dimension_predictor(features)
-
-                # Calculate losses
-                class_loss = self.classification_loss(class_output, labels)
-                dim_loss = self.dimension_loss(dim_output, dimensions)
-                total_batch_loss = class_loss + dim_loss
-
-                # Backward pass
-                self.cnn_optimizer.zero_grad()
-                self.lstm_optimizer.zero_grad()
-                self.dim_optimizer.zero_grad()
-                total_batch_loss.backward()
-
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(
-                    self.cnn.parameters(), TRAINING["GRADIENT_CLIP_NORM"]
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    self.corner_lstm.parameters(), TRAINING["GRADIENT_CLIP_NORM"]
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    self.dimension_predictor.parameters(), TRAINING["GRADIENT_CLIP_NORM"]
-                )
-
-                # Update weights
-                self.cnn_optimizer.step()
-                self.lstm_optimizer.step()
-                self.dim_optimizer.step()
-
-                # Update metrics
-                total_loss += total_batch_loss.item()
-                _, predicted = class_output.max(1)
-                correct_predictions += predicted.eq(labels).sum().item()
-                total_samples += labels.size(0)
-
-                if batch_idx % 100 == 0:
-                    print(
-                        f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {total_batch_loss.item():.4f}"
-                    )
-
-            # Calculate training metrics
-            train_loss = total_loss / len(self.train_loader)
-            train_acc = correct_predictions / total_samples
-            
-            # Validation phase
-            val_loss, val_accuracy = self.validate()
-            
-            # Update learning rate schedulers
-            if self.cnn_scheduler:
-                self.cnn_scheduler.step(val_accuracy)
-            if self.lstm_scheduler:
-                self.lstm_scheduler.step(val_accuracy)
-            if self.dim_scheduler:
-                self.dim_scheduler.step(val_loss)
-                
-            # Update training history
-            self.training_history['train_loss'].append(train_loss)
-            self.training_history['train_acc'].append(train_acc)
-            self.training_history['val_loss'].append(val_loss)
-            self.training_history['val_acc'].append(val_accuracy)
-            
-            # Save checkpoint
-            if epoch % TRAINING["CHECKPOINT_FREQUENCY"] == 0:
-                self._save_checkpoint(epoch, val_accuracy, val_loss)
-            
-            # Early stopping check
-            if val_accuracy > self.best_accuracy + self.early_stopping_min_delta:
-                self.best_accuracy = val_accuracy
-                self.best_model_state = {
-                    "cnn": self.cnn.state_dict(),
-                    "lstm": self.corner_lstm.state_dict(),
-                    "dim_predictor": (
-                        self.dimension_predictor.state_dict()
-                        if self.dimension_predictor
-                        else None
-                    ),
-                    "accuracy": val_accuracy,
-                    "epoch": epoch,
-                }
-                self.early_stopping_counter = 0
-            else:
-                self.early_stopping_counter += 1
-                
-            # Check if early stopping should be triggered
-            if self.early_stopping_counter >= self.early_stopping_patience:
-                print(f"Early stopping triggered after {epoch+1} epochs")
-                break
-
-            epoch_time = time.time() - epoch_start_time
-            print(
-                f"Epoch {epoch} completed in {epoch_time:.2f}s. "
-                f"Training Loss: {train_loss:.4f}, "
-                f"Training Accuracy: {100.*train_acc:.2f}%, "
-                f"Validation Loss: {val_loss:.4f}, "
-                f"Validation Accuracy: {100.*val_accuracy:.2f}%"
-            )
-            
-        total_time = time.time() - start_time
-        print(f"Training completed in {total_time:.2f}s")
-
-    def _save_checkpoint(self, epoch, val_accuracy, val_loss):
-        """Save a checkpoint during training"""
-        checkpoint_path = os.path.join(
-            self.checkpoint_dir, f"checkpoint_epoch_{epoch}.pt"
-        )
-        checkpoint = {
-            "epoch": epoch,
-            "cnn": self.cnn.state_dict(),
-            "lstm": self.corner_lstm.state_dict(),
-            "dim_predictor": (
-                self.dimension_predictor.state_dict()
-                if self.dimension_predictor
-                else None
-            ),
-            "cnn_optimizer": self.cnn_optimizer.state_dict(),
-            "lstm_optimizer": self.lstm_optimizer.state_dict(),
-            "dim_optimizer": self.dim_optimizer.state_dict(),
-            "val_accuracy": val_accuracy,
-            "val_loss": val_loss,
-            "training_history": self.training_history,
-        }
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved to {checkpoint_path}")
-
-    def validate(self) -> Tuple[float, float]:
-        """Validate the model and return validation loss and accuracy"""
-        self.cnn.eval()
-        self.corner_lstm.eval()
-        self.dimension_predictor.eval()
-        
-        val_loss = 0
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            for batch in self.valid_loader:
-                images = batch["image"].to(self.device)
-                labels = batch["label"].to(self.device)
-                dimensions = batch["dimensions"].to(self.device)
-
-                # Forward pass
-                class_output, features = self.cnn(images)
-                dim_output = self.dimension_predictor(features)
-                
-                # Calculate losses
-                class_loss = self.classification_loss(class_output, labels)
-                dim_loss = self.dimension_loss(dim_output, dimensions)
-                batch_loss = class_loss + dim_loss
-                
-                val_loss += batch_loss.item()
-                
-                # Calculate accuracy
-                _, predicted = class_output.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
-
-        val_loss = val_loss / len(self.valid_loader)
-        val_accuracy = correct / total
-        
-        return val_loss, val_accuracy
-
-    def extract_dimensions(self, image: np.ndarray, corners=None) -> torch.Tensor:
-        """Extract dimensions from pattern image"""
-        if corners is not None and len(corners) > 0:
-            try:
-                # Ensure corners is a proper numpy array
-                corners_array = np.array(corners).reshape(-1, 2)
-                
-                # Check if we have enough points
-                if corners_array.shape[0] < MODEL["MIN_CORNER_POINTS"]:
-                    raise ValueError("Not enough corner points to calculate dimensions")
-                
-                # Find extreme points
-                top = corners_array[corners_array[:, 1].argmin()]
-                bottom = corners_array[corners_array[:, 1].argmax()]
-                left = corners_array[corners_array[:, 0].argmin()]
-                right = corners_array[corners_array[:, 0].argmax()]
-
-                # Calculate distances
-                height = np.sqrt((top[0] - bottom[0]) ** 2 + (top[1] - bottom[1]) ** 2)
-                width = np.sqrt((left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2)
-                
-                # Check for valid dimensions
-                if height <= 0 or width <= 0:
-                    raise ValueError("Invalid dimensions calculated from corners")
-
-                return torch.tensor([width, height], dtype=torch.float32)
-            except Exception as e:
-                print(f"Error extracting dimensions from corners: {e}")
-                # Fall through to the fallback method
-
-        # Fallback: Use image dimensions with aspect ratio preserved
-        h, w = image.shape[:2]
-        scale = min(IMAGE_PROCESSING["STANDARD_IMAGE_SIZE"] / w, IMAGE_PROCESSING["STANDARD_IMAGE_SIZE"] / h)
-        width = w * scale
-        height = h * scale
-
-        return torch.tensor([width, height], dtype=torch.float32)
-
-    def process_pattern(self, pattern_image: np.ndarray) -> Dict:
-        """Process a pattern image and extract features"""
-        if pattern_image is None:
-            raise ValueError("Input pattern image cannot be None")
-
-        # Make a copy to avoid modifying the original
-        pattern_image_copy = pattern_image.copy()
-
-        # Ensure we have a 3-channel image
-        if len(pattern_image_copy.shape) == 2:
-            pattern_image_copy = cv2.cvtColor(pattern_image_copy, cv2.COLOR_GRAY2BGR)
-
-        # Set models to evaluation mode
-        self.cnn.eval()
-        self.corner_lstm.eval()
-        if self.dimension_predictor:
-            self.dimension_predictor.eval()
-
-        # Extract features
+        # Apply thresholding to separate pattern from background
+        # Try adaptive thresholding first
         try:
-            # Preprocess image
-            processed_image = preprocess_image_for_model(
-                pattern_image_copy, self.device
+            binary = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+            )
+        except Exception:
+            # Fallback to regular thresholding
+            _, binary = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
 
+        # Clean up with morphology operations
+        kernel = np.ones((5, 5), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+        # Find contours
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        # No contours found
+        if not contours:
+            logger.warning(f"No contours found in {image_path}")
+            return {"contour": np.array([]), "key_points": []}
+
+        # Get the largest contour (assumed to be the pattern)
+        main_contour = max(contours, key=cv2.contourArea)
+
+        # Simplify the contour
+        perimeter = cv2.arcLength(main_contour, True)
+        epsilon = PATTERN["CONTOUR_SIMPLIFICATION"] * perimeter
+        simplified = cv2.approxPolyDP(main_contour, epsilon, True)
+
+        # Extract key points (corners or significant points)
+        key_points = []
+
+        # Method 1: Use simplified polygon vertices
+        if len(simplified) >= 3:
+            key_points = [tuple(pt[0]) for pt in simplified]
+
+        # Method 2: Fallback to corner detection if not enough points
+        if len(key_points) < 3:
+            # Create mask with the pattern
+            mask = np.zeros_like(gray)
+            cv2.drawContours(mask, [main_contour], 0, 255, -1)
+
+            # Detect corners
+            corners = cv2.goodFeaturesToTrack(
+                mask, maxCorners=8, qualityLevel=0.01, minDistance=10
+            )
+            if corners is not None:
+                key_points = [tuple(corner.ravel()) for corner in corners]
+
+        return {"contour": simplified, "key_points": key_points}
+
+    def extract_dimensions_from_filename(
+        self, filename: str
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Extract width and height from filename if available.
+        Format: pattern_50x80.png -> 50cm x 80cm
+        """
+        # Try to find a pattern like "50x80" in the filename
+        match = re.search(r"(\d+)x(\d+)", filename)
+        if match:
+            width = float(match.group(1))
+            height = float(match.group(2))
+            logger.info(f"Extracted dimensions from filename: {width}x{height} cm")
+            return width, height
+        return None, None
+
+    def estimate_dimensions(
+        self, contour: np.ndarray, pattern_type: str
+    ) -> Tuple[float, float]:
+        """
+        Estimate pattern dimensions based on contour and/or neural network predictions.
+        Falls back to standard dimensions for the pattern type.
+        """
+        # Default to standard dimensions for this pattern type
+        standard = PATTERN["STANDARD_DIMENSIONS"].get(
+            pattern_type, PATTERN["STANDARD_DIMENSIONS"]["other"]
+        )
+
+        if len(contour) > 2:
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # Convert from pixels to cm
+            pixel_to_cm = PATTERN["PIXEL_TO_CM"]
+            width_cm = w * pixel_to_cm
+            height_cm = h * pixel_to_cm
+
+            # If the dimensions seem reasonable, use them
+            if width_cm > 5 and height_cm > 5:
+                return width_cm, height_cm
+
+        # Fallback to standard dimensions
+        return standard["width"], standard["height"]
+
+    def process_image(self, image_path: str) -> Pattern:
+        """
+        Process a pattern image and extract all relevant information.
+        This is the main entry point for pattern recognition.
+        """
+        logger.info(f"Processing pattern image: {image_path}")
+
+        # Extract pattern shape
+        shape_info = self.extract_pattern_shape(image_path)
+        contour = shape_info["contour"]
+        key_points = shape_info["key_points"]
+
+        # Get filename and try to extract dimensions
+        filename = os.path.basename(image_path)
+        name = os.path.splitext(filename)[0]
+        width, height = self.extract_dimensions_from_filename(filename)
+
+        # Process with neural network if available
+        pattern_type = "other"  # Default
+        confidence = 1.0
+
+        # Load the image for neural network
+        img = cv2.imread(image_path)
+        if img is not None:
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img_tensor = self.transforms(img_rgb).unsqueeze(0).to(self.device)
+
+            # Run inference
+            self.model.eval()
             with torch.no_grad():
-                # Get features
-                class_output, features = self.cnn(processed_image)
+                output = self.model(img_tensor)
 
-                # Get pattern type if trained with dataset
-                if hasattr(self, "train_dataset") and hasattr(
-                    self.train_dataset, "pattern_types"
-                ):
-                    pattern_type = torch.argmax(class_output, dim=1).item()
-                    pattern_type_name = self.train_dataset.pattern_types[pattern_type]
-                else:
-                    pattern_type_name = "unknown"
+            # Get pattern type prediction
+            type_scores = F.softmax(output["pattern_type"], dim=1)
+            type_idx = torch.argmax(type_scores, dim=1).item()
+            pattern_type = self.pattern_types[type_idx]
+            confidence = type_scores[0, type_idx].item()
 
-                # Get corners
-                feature_seq = features.view(features.size(0), 1, -1)
-                corner_output, _ = self.corner_lstm(feature_seq)
-                corners = torch.sigmoid(corner_output).cpu().numpy().squeeze()
+            # Use network's dimension prediction if no dimensions in filename
+            if width is None or height is None:
+                # Get scale factors
+                scale_factors = output["dimensions"].cpu().numpy()[0]
 
-                # Get dimensions
-                if self.dimension_predictor:
-                    dimensions = (
-                        self.dimension_predictor(features).cpu().numpy().squeeze()
-                    )
-                else:
-                    dimensions = self.extract_dimensions(pattern_image_copy, corners)
-
-                # Extract contours using shared utility
-                contours = extract_contours(pattern_image_copy)
-
-                return {
-                    "pattern_type": pattern_type_name,
-                    "corners": corners,
-                    "dimensions": dimensions,
-                    "contours": contours,
-                    "features": features.cpu().numpy().squeeze(),
-                    "num_pattern_pieces": len(contours),
-                }
-
-        except Exception as e:
-            print(f"Error during pattern processing: {e}")
-
-            # Fallback using traditional CV methods
-            gray = cv2.cvtColor(pattern_image_copy, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(
-                gray,
-                IMAGE_PROCESSING["EDGE_DETECTION_LOW"],
-                IMAGE_PROCESSING["EDGE_DETECTION_HIGH"],
-            )
-            contours, _ = cv2.findContours(
-                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            # Create a minimal contour if none found
-            if len(contours) == 0:
-                h, w = pattern_image_copy.shape[:2]
-                simple_contour = np.array(
-                    [[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32
+                # Get base dimensions for the predicted type
+                standard = PATTERN["STANDARD_DIMENSIONS"].get(
+                    pattern_type, PATTERN["STANDARD_DIMENSIONS"]["other"]
                 )
-                contours = [simple_contour]
 
-            # Get basic dimensions
-            dimensions = self.extract_dimensions(pattern_image_copy)
+                # Apply scale factors (clipped to reasonable range)
+                scale_x = max(0.5, min(2.0, 1.0 + scale_factors[0]))
+                scale_y = max(0.5, min(2.0, 1.0 + scale_factors[1]))
 
-            return {
-                "pattern_type": "unknown",
-                "corners": None,
-                "dimensions": dimensions,
-                "contours": contours,
-                "features": None,
-                "error": str(e),
-            }
+                width = standard["width"] * scale_x
+                height = standard["height"] * scale_y
 
-    def save_model(self, model_path: str):
-        """Save the model weights"""
-        torch.save(self.best_model_state, model_path)
+        # If still no dimensions, try to estimate from contour
+        if width is None or height is None:
+            width, height = self.estimate_dimensions(contour, pattern_type)
 
-    def load_model(self, model_path: str):
-        """Load model weights"""
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.cnn.load_state_dict(checkpoint["cnn"])
-        self.corner_lstm.load_state_dict(checkpoint["lstm"])
-        if self.dimension_predictor and checkpoint["dim_predictor"]:
-            self.dimension_predictor.load_state_dict(checkpoint["dim_predictor"])
-        self.best_accuracy = checkpoint["accuracy"]
+        # Calculate area
+        if len(contour) > 2:
+            # Use contour area
+            pixel_area = cv2.contourArea(contour)
+            area = pixel_area * (PATTERN["PIXEL_TO_CM"] ** 2)
+        else:
+            # Fallback to rectangular area
+            area = width * height
+
+        # Create Pattern object
+        pattern = Pattern(
+            id=hash(image_path),
+            name=name,
+            pattern_type=pattern_type,
+            width=width,
+            height=height,
+            area=area,
+            contour=contour,
+            confidence=confidence,
+            key_points=key_points,
+        )
+
+        logger.info(
+            f"Pattern detected: {pattern_type} ({confidence:.2f}), "
+            f"{width:.1f}x{height:.1f} cm, Area: {area:.1f} cm²"
+        )
+
+        return pattern
+
+    def save_model(self):
+        """Save the pattern recognition model."""
+        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+        torch.save(
+            {
+                "model_state_dict": self.model.state_dict(),
+                "backbone_type": self.model.backbone_type,
+                "feature_dim": self.model.feature_dim,
+                "num_classes": self.model.num_classes,
+                "pattern_types": self.pattern_types,
+            },
+            self.model_path,
+        )
+        logger.info(f"Pattern recognition model saved to {self.model_path}")
+
+    def load_model(self) -> bool:
+        """Load the pattern recognition model."""
+        if not os.path.exists(self.model_path):
+            logger.warning(f"No model found at {self.model_path}")
+            return False
+
+        try:
+            logger.info(f"Loading pattern recognition model from {self.model_path}")
+            checkpoint = torch.load(self.model_path, map_location=self.device)
+
+            # Load model state
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+
+            # Load pattern types if available
+            if "pattern_types" in checkpoint:
+                self.pattern_types = checkpoint["pattern_types"]
+
+            logger.info("Pattern recognition model loaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+            return False
+
+    def train(self, train_images: List[str], epochs: int = 10) -> Dict:
+        """Train the pattern recognition model."""
+        logger.info(
+            f"Training pattern recognition model with {len(train_images)} images"
+        )
+
+        # TODO: Implement proper training
+        # For now, just save the model
+        self.save_model()
+
+        return {"status": "success", "message": "Model saved", "epochs_completed": 0}

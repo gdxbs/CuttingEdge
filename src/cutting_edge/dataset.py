@@ -95,7 +95,9 @@ class DatasetLoader:
 
         # Extract dimensions from design parameters
         # pattern_size parameter contains width and height in centimeters (real-world scale)
-        dimensions = design_params.get("pattern_size", DATASET["DEFAULT_PATTERN_DIMENSIONS"])
+        dimensions = design_params.get(
+            "pattern_size", DATASET["DEFAULT_PATTERN_DIMENSIONS"]
+        )
 
         # If dimensions are not in the expected format, log and use default values
         # Default of 256x256 is a common standardized size for pattern visualization
@@ -191,7 +193,9 @@ class PatternDataset(torch.utils.data.Dataset):
         except (KeyError, ValueError, Exception) as e:
             print(e)
             return {
-                "image": torch.zeros(DATASET["DEFAULT_EMPTY_IMAGE"]),  # Default empty image
+                "image": torch.zeros(
+                    DATASET["DEFAULT_EMPTY_IMAGE"]
+                ),  # Default empty image
                 "label": 0,  # Default label
                 "dimensions": torch.tensor(
                     DATASET["DEFAULT_EMPTY_DIMENSIONS"], dtype=torch.float32
@@ -217,7 +221,9 @@ class PatternDataset(torch.utils.data.Dataset):
         # - Normalize using ImageNet statistics for transfer learning compatibility
         transform = transforms.Compose(
             [
-                transforms.Resize(DATASET["DEFAULT_IMAGE_SIZE"]),  # Standard size for model input
+                transforms.Resize(
+                    DATASET["DEFAULT_IMAGE_SIZE"]
+                ),  # Standard size for model input
                 transforms.ToTensor(),  # Convert to tensor (0-1 range)
                 transforms.Normalize(
                     # ImageNet mean and std values (standard for pretrained models)
