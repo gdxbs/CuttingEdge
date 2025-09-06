@@ -1,6 +1,9 @@
 # Cutting Edge: Garment Pattern Recognition System
 
-> **New!** We now have a [simplified version](README_SIMPLE.md) that's perfect for beginners in computer vision and reinforcement learning. If you're new to these fields, we recommend starting with the simplified system.
+> **Choose Your Version:**
+> - 🎓 **[Simplified System](README_SIMPLE.md)** - Perfect for beginners learning computer vision and RL
+> - 🚀 **[Enhanced System](README_ENHANCED.md)** - Best of both worlds: simple yet powerful
+> - 🔬 **Original System** (this page) - Full research implementation
 
 ## Overview
 
@@ -144,22 +147,27 @@ deactivate
 
 ## Usage
 
-### Quick Start (Simplified System) - Recommended for Beginners
+### Quick Start - Choose Your Approach
 
+#### Option 1: Simplified System (Beginners)
 ```bash
-# Single pattern fitting with automatic dimension detection
+# Single pattern fitting
 python -m src.cutting_edge.simple_main --pattern images/shape/pattern_50x80.png --cloth images/cloth/cloth_200x300.jpeg
-
-# Multi-pattern fitting
-python -m src.cutting_edge.simple_main --multi_pattern
-
-# Train models
-python -m src.cutting_edge.simple_main --mode train
 ```
+See [README_SIMPLE.md](README_SIMPLE.md) for details.
 
-See [README_SIMPLE.md](README_SIMPLE.md) for detailed instructions on the simplified system.
+#### Option 2: Enhanced System (Recommended)
+```bash
+# Run demo with automatic selection
+python -m src.cutting_edge.enhanced_main --mode demo --num_patterns 3
 
-### Advanced Usage (Original System)
+# Fit specific patterns with multiple orientations
+python -m src.cutting_edge.enhanced_main --mode fit \
+    --patterns images/shape/*.png --cloth images/cloth/cloth_200x300.jpeg
+```
+See [README_ENHANCED.md](README_ENHANCED.md) for details.
+
+#### Option 3: Original System (Research)
 
 ```bash
 # Train pattern recognition model
