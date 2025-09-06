@@ -71,7 +71,7 @@ Repository = "https://github.com/gdxbs/CuttingEdge.git"
 Documentation = "https://github.com/gdxbs/CuttingEdge#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cutting_edge"]
+packages = ["cutting_edge"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

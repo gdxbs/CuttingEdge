@@ -21,9 +21,9 @@ import torch.nn.functional as F
 from shapely.affinity import rotate, scale, translate
 from shapely.geometry import Polygon
 
-from .cloth_recognition import ClothMaterial
+from .cloth_recognition_module import ClothMaterial
 from .config import FITTING, SYSTEM, VISUALIZATION
-from .pattern_recognition import Pattern
+from .pattern_recognition_module import Pattern
 
 # Setup logging
 logging.basicConfig(

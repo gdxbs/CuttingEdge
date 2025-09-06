@@ -1,0 +1,24 @@
+[
+  {
+    "timestamp": "2025-09-06T16:47:41.662435",
+    "patterns_total": 3,
+    "patterns_placed": 2,
+    "utilization_percentage": 0.3691923038062528,
+    "success_rate": 66.66666666666666,
+    "total_pattern_area": 161.71000000000004,
+    "waste_area": 43639.311400723265,
+    "cloth_dimensions": [
+      200,
+      300
+    ],
+    "cloth_usable_area": 43801.021400723264,
+    "visualization_path": "/Users/aryaminus/Developer/cutting-edge/output/fitting_result_20250906_164740.png",
+    "cloth_analysis_path": "/Users/aryaminus/Developer/cutting-edge/output/cloth_analysis_20250906_164740.png",
+    "pattern_paths": [
+      "/Users/aryaminus/Developer/cutting-edge/images/shape/pattern_50x80.png",
+      "/Users/aryaminus/Developer/cutting-edge/images/shape/rand_0BD28UCVO8_pattern.png",
+      "/Users/aryaminus/Developer/cutting-edge/images/shape/pattern_30x40.png"
+    ],
+    "cloth_path": "/Users/aryaminus/Developer/cutting-edge/images/cloth/generated_cloth_2.jpeg"
+  }
+]
