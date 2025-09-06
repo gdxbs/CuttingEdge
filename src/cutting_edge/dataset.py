@@ -7,6 +7,8 @@ import torchvision.transforms as transforms
 import yaml
 from PIL import Image
 
+from cutting_edge.config import DATASET, IMAGE_PROCESSING
+
 
 class DatasetLoader:
     """Loader for GarmentCodeData dataset
@@ -93,15 +95,15 @@ class DatasetLoader:
 
         # Extract dimensions from design parameters
         # pattern_size parameter contains width and height in centimeters (real-world scale)
-        dimensions = design_params.get("pattern_size", [256, 256])
+        dimensions = design_params.get("pattern_size", DATASET["DEFAULT_PATTERN_DIMENSIONS"])
 
         # If dimensions are not in the expected format, log and use default values
         # Default of 256x256 is a common standardized size for pattern visualization
         if not isinstance(dimensions, list) or len(dimensions) != 2:
             print(
-                f"Warning: Invalid dimensions format in {pattern}_design_params.yaml. Using default [256, 256]."
+                f"Warning: Invalid dimensions format in {pattern}_design_params.yaml. Using default {DATASET['DEFAULT_PATTERN_DIMENSIONS']}."
             )
-            dimensions = [256, 256]
+            dimensions = DATASET["DEFAULT_PATTERN_DIMENSIONS"]
 
         return {
             "type": type.split("_")[0],
@@ -189,10 +191,10 @@ class PatternDataset(torch.utils.data.Dataset):
         except (KeyError, ValueError, Exception) as e:
             print(e)
             return {
-                "image": torch.zeros((3, 512, 512)),  # Default empty image
+                "image": torch.zeros(DATASET["DEFAULT_EMPTY_IMAGE"]),  # Default empty image
                 "label": 0,  # Default label
                 "dimensions": torch.tensor(
-                    [256.0, 256.0], dtype=torch.float32
+                    DATASET["DEFAULT_EMPTY_DIMENSIONS"], dtype=torch.float32
                 ),  # Default dimensions
             }
 
@@ -215,13 +217,13 @@ class PatternDataset(torch.utils.data.Dataset):
         # - Normalize using ImageNet statistics for transfer learning compatibility
         transform = transforms.Compose(
             [
-                transforms.Resize((512, 512)),  # Standard size for model input
+                transforms.Resize(DATASET["DEFAULT_IMAGE_SIZE"]),  # Standard size for model input
                 transforms.ToTensor(),  # Convert to tensor (0-1 range)
                 transforms.Normalize(
                     # ImageNet mean and std values (standard for pretrained models)
                     # REF: https://pytorch.org/vision/stable/models.html
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225],
+                    mean=IMAGE_PROCESSING["IMAGENET_MEAN"],
+                    std=IMAGE_PROCESSING["IMAGENET_STD"],
                 ),
             ]
         )

@@ -1,1304 +1,929 @@
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 import cv2
-import gymnasium as gym  # OpenAI Gym for RL environments
+import gymnasium as gym
 import numpy as np
-import shapely.affinity as sa  # For rotating and transforming polygons
-import shapely.geometry as sg  # For handling complex polygons
+import shapely.affinity as sa
+import shapely.geometry as sg
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
+
+# Import Stable Baselines3
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+from cutting_edge.config import (
+    IMAGE_PROCESSING,
+    MODEL,
+    PATTERN_FITTING,
+    TRAINING,
+    VISUALIZATION,
+    ENVIRONMENT,
+)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, ENVIRONMENT["LOG_LEVEL"]))
 logger = logging.getLogger(__name__)
 
-# Pattern Fitting Module
-#
-# This module implements pattern fitting onto cloth materials using Hierarchical
-# Reinforcement Learning (HRL). Based on research by Wang et al. (2022) and Zhang et al. (2023),
-# the system uses a two-level approach:
-#
-# 1. A manager network that decides which pattern to place next
-# 2. A worker network that decides where and at what rotation to place the pattern
-#
-# The implementation follows the approach described in the paper:
-# "Planning Irregular Object Packing via Hierarchical Reinforcement Learning" (Wang et al., 2022)
-#
-# The system can optimize material utilization through:
-# - Strategic pattern ordering
-# - Optimal positioning and orientation
-# - Learning-based adaptation to different cloth and pattern shapes
+"""
+Pattern Fitting Module
+
+This module implements pattern fitting onto cloth materials using reinforcement learning.
+The system optimizes material utilization by determining:
+1. Which pattern to place next
+2. Where and at what rotation to place it
+
+This implementation uses Stable Baselines3 for the reinforcement learning component,
+making it more maintainable and easier to understand.
+"""
 
 
 class PackingEnvironment(gym.Env):
-    """Environment for pattern packing optimization
-
-    This class implements a reinforcement learning environment for optimizing
-    pattern placement on cloth. It handles the simulation of placing pattern
-    contours on a 2D cloth space while enforcing constraints such as no overlapping
-    and staying within cloth boundaries.
-
-    The environment follows the Gymnasium interface with methods for:
-    - reset(): Initializing a new episode
-    - step(action): Taking an action and returning next state, reward, done flag
-
-    State representation includes:
-    - Current cloth space (binary mask of occupied space)
-    - Next pattern to place (binary mask of pattern shape)
-    - Distance transform channel (spatial awareness)
-
-    References:
-    - "Planning Irregular Object Packing via Hierarchical Reinforcement Learning" (Wang et al., 2022)
-    - "Tree Search + Reinforcement Learning for Two-Dimensional Cutting Stock Problem
-       With Complex Constraints" (Zhang et al., 2023)
-    """
+    """Environment for pattern fitting using reinforcement learning"""
+    # These attributes need to be defined at class level to prevent attribute errors
+    cloth_width = PATTERN_FITTING["DEFAULT_CLOTH_WIDTH"]
+    cloth_height = PATTERN_FITTING["DEFAULT_CLOTH_HEIGHT"]
 
     def __init__(
         self,
         cloth_data: Dict,
         patterns: List[Dict],
-        rotation_angles: List[int],
-        render_mode=None,
+        rotation_angles: List[float] = PATTERN_FITTING["ROTATION_ANGLES"],
     ):
-        """Initialize the packing environment
+        """Initialize the environment
 
         Args:
-            cloth_data: Dictionary with cloth properties including dimensions
-            patterns: List of dictionaries containing pattern properties
-            rotation_angles: List of possible rotation angles for patterns
-            render_mode: Mode for rendering (human, rgb_array, or None)
+            cloth_data: Dictionary with cloth properties
+            patterns: List of pattern dictionaries
+            rotation_angles: List of possible rotation angles
         """
+        super().__init__()
+
+        # Store cloth and pattern data
         self.cloth_data = cloth_data
-        self.cloth_width, self.cloth_height = map(int, cloth_data["dimensions"])
         self.patterns = patterns
-        self.current_state = None
-        self.placed_patterns = []
-        self.available_patterns = list(
-            range(len(patterns))
-        )  # Initialize available patterns
-        self.grid_size = 1  # Minimum unit for placement
         self.rotation_angles = rotation_angles
-        self.render_mode = render_mode
 
-        # Create Shapely polygon for cloth boundary
-        self.cloth_polygon = sg.box(0, 0, self.cloth_width, self.cloth_height)
+        # Initialize cloth state
+        self.cloth_state = np.zeros(
+            (cloth_data["width"], cloth_data["height"]), dtype=np.uint8
+        )
+        self.current_pattern_idx = 0
+        self.placed_patterns = []
 
-        # Convert patterns to Shapely polygons
-        self.pattern_polygons = []
-        # Keep track of which pattern each polygon belongs to
-        self.pattern_idx_map = []
-        pattern_count = 0
-
-        # Process each pattern and its contours
-        for pattern_idx, pattern in enumerate(patterns):
-            if "contours" in pattern and pattern["contours"]:
-                # Process each contour in the pattern (there might be multiple pattern pieces)
-                for contour_idx, contour in enumerate(pattern["contours"]):
-                    try:
-                        # Reshape contour to the format Shapely expects
-                        contour_points = contour.squeeze()
-
-                        # Check if we have enough points for a valid polygon
-                        if len(contour_points) < 4:
-                            # Skip very small contours or create fallback
-                            continue
-
-                        # Make sure it's closed (first and last points match)
-                        if not np.array_equal(contour_points[0], contour_points[-1]):
-                            contour_points = np.vstack(
-                                [contour_points, contour_points[0]]
-                            )
-
-                        # Create a Shapely polygon
-                        polygon = sg.Polygon(contour_points)
-
-                        # Verify the polygon is valid
-                        if not polygon.is_valid:
-                            continue
-
-                        # Add the polygon and map it to the original pattern
-                        self.pattern_polygons.append(polygon)
-                        self.pattern_idx_map.append(pattern_idx)
-                        pattern_count += 1
-
-                    except Exception as e:
-                        logger.warning(
-                            f"Error creating polygon from contour {contour_idx}: {e}"
-                        )
-
-                # If no valid polygons were created, use a fallback
-                if len(self.pattern_polygons) == pattern_count:
-                    width, height = pattern.get("dimensions", (10, 10))
-                    if hasattr(width, "item"):  # Handle tensor types
-                        width, height = width.item(), height.item()
-                    polygon = sg.box(0, 0, float(width), float(height))
-                    self.pattern_polygons.append(polygon)
-                    self.pattern_idx_map.append(pattern_idx)
-                    pattern_count += 1
-            else:
-                # Fallback to a simple rectangle if no contours
-                if "dimensions" in pattern:
-                    width, height = pattern["dimensions"]
-                    # Convert to float (handles both tensor and numpy types)
-                    if hasattr(width, "item"):
-                        width, height = width.item(), height.item()
-                    width, height = float(width), float(height)
-                    polygon = sg.box(0, 0, width, height)
-                    self.pattern_polygons.append(polygon)
-                    self.pattern_idx_map.append(pattern_idx)
-                    pattern_count += 1
-                else:
-                    # Log warning for patterns without geometry
-                    logger.warning(
-                        f"Pattern {pattern_idx} missing both contours and dimensions"
-                    )
-
-        # Ensure we have at least one pattern
-        if not self.pattern_polygons:
-            # Create a default rectangle as fallback
-            logger.warning("No valid patterns found, using fallback rectangle")
-            polygon = sg.box(0, 0, 10.0, 10.0)
-            self.pattern_polygons.append(polygon)
-            self.pattern_idx_map.append(0)
-
-        # Enhanced observation space with more channels for better pattern understanding
-        # Add a pattern mask channel for each pattern to help the model understand all
-        # available patterns at once, enabling better planning
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=1,
-            shape=(3 + len(patterns), self.cloth_height, self.cloth_width),
-            dtype=np.float32,
+        # Define action space
+        # [x, y, rotation_idx]
+        self.action_space = gym.spaces.Box(
+            low=np.array([0, 0, 0]),
+            high=np.array(
+                [
+                    cloth_data["width"] - 1,
+                    cloth_data["height"] - 1,
+                    len(rotation_angles) - 1,
+                ]
+            ),
+            dtype=np.int32,
         )
 
-        # Use Dict action space for compatibility with our HRL implementation
-        # Action space: [pattern_idx, position_x, position_y, rotation_idx]
-        self.action_space = gym.spaces.Dict(
+        # Define observation space
+        # [cloth_state, current_pattern_mask, remaining_patterns_mask]
+        self.observation_space = gym.spaces.Dict(
             {
-                "pattern_idx": gym.spaces.Discrete(len(patterns)),
-                "position": gym.spaces.Box(
-                    low=np.array([0, 0]),
-                    high=np.array([self.cloth_width - 1, self.cloth_height - 1]),
-                    dtype=np.int32,
+                "cloth_state": gym.spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(cloth_data["width"], cloth_data["height"], 1),
+                    dtype=np.float32,
                 ),
-                "rotation": gym.spaces.Discrete(len(rotation_angles)),
-                # Add finer rotation control
-                "fine_rotation": gym.spaces.Box(
-                    low=np.array([-5.0]),  # Fine adjustment in degrees
-                    high=np.array([5.0]),
+                "current_pattern": gym.spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(cloth_data["width"], cloth_data["height"], 1),
+                    dtype=np.float32,
+                ),
+                "pattern_info": gym.spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(4,),  # [width, height, area, remaining_patterns]
                     dtype=np.float32,
                 ),
             }
         )
 
-        # Set metadata for rendering
-        self.metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
-
-        # Initialize cloth space
-        self.reset()[0]  # Only keep state, ignore info dict
-
-    def reset(self, seed=None, options=None):
-        """Reset environment to initial state
+    def reset(self, seed=None):
+        """Reset the environment
 
         Returns:
-            Tuple of (state, info_dict) following Gymnasium API
+            Initial observation
         """
-        # Set the seed if provided
-        if seed is not None:
-            np.random.seed(seed)
-
-        self.cloth_space = np.zeros(
-            (self.cloth_height, self.cloth_width), dtype=np.uint8
+        super().reset(seed=seed)
+        self.cloth_state = np.zeros(
+            (self.cloth_width, self.cloth_height), dtype=np.uint8
         )
-        self.current_state = self._get_state()
+        self.current_pattern_idx = 0
         self.placed_patterns = []
-        self.available_patterns = list(
-            range(len(self.patterns))
-        )  # Indices of available patterns
+        self.available_patterns = list(range(len(self.patterns)))
+        self.pattern_idx_map = {i: i for i in range(len(self.patterns))}
+        return self._get_observation(), {}
 
-        return (
-            self.current_state,
-            {},
-        )  # Return state and empty info dict (Gymnasium API)
-
-    def step(self, action: Dict) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """Execute one step in the environment with enhanced placement options
-
-        Enhanced to handle:
-        1. Fine rotation adjustments for more precise placement
-        2. Better rewards for successful placements
-        3. Additional tracking of pattern placement quality
+    def step(self, action):
+        """Take a step in the environment
 
         Args:
-            action: Dictionary containing pattern_idx, position, rotation,
-                   and fine_rotation for precise angular adjustments
+            action: [x, y, rotation_idx]
 
         Returns:
-            Tuple of (next_state, reward, terminated, truncated, info) following Gymnasium API
+            observation, reward, terminated, truncated, info
         """
-        pattern_idx = action["pattern_idx"]
-        position = action["position"]
+        x, y, rotation_idx = action
+        pattern = self.patterns[self.current_pattern_idx]
+        rotation = self.rotation_angles[rotation_idx]
 
-        # Get base rotation from discrete rotation index
-        base_rotation = (
-            action["rotation"]
-            if isinstance(action["rotation"], (int, float))
-            else self.rotation_angles[action["rotation"]]
+        # Try to place pattern
+        success = self._place_pattern(pattern, x, y, rotation, self.current_pattern_idx)
+
+        # Calculate reward components
+        placement_reward = 1.0 if success else -1.0
+        utilization_reward = self._calculate_utilization()
+        overlap_penalty = -0.5 if not success else 0.0
+        efficiency_bonus = 0.1 if self._is_efficient_placement(x, y, pattern, rotation) else 0.0
+
+        # Combine rewards
+        reward = (
+            placement_reward +
+            utilization_reward * 0.5 +
+            overlap_penalty +
+            efficiency_bonus
         )
-
-        # Apply fine rotation adjustment if provided
-        fine_rotation = action.get("fine_rotation", 0.0)
-        if isinstance(fine_rotation, np.ndarray) and len(fine_rotation) > 0:
-            fine_rotation = fine_rotation[0]  # Extract value from array
-
-        # Calculate final rotation with fine adjustment
-        rotation = base_rotation + float(fine_rotation)
-
-        # Keep rotation in 0-360 range
-        rotation = rotation % 360
-
-        # If pattern is already placed
-        if pattern_idx not in self.available_patterns:
-            reward = -1.0
-            done = len(self.placed_patterns) == len(self.patterns)
-            info = {
-                "success": False,
-                "utilization": self._calculate_utilization(),
-                "remaining_patterns": len(self.patterns) - len(self.placed_patterns),
-                "placement_quality": 0.0,
-            }
-            return self.current_state, reward, done, False, info
-
-        # Get the original pattern this polygon belongs to
-        original_pattern_idx = (
-            self.pattern_idx_map[pattern_idx]
-            if pattern_idx < len(self.pattern_idx_map)
-            else pattern_idx
-        )
-        pattern = self.patterns[original_pattern_idx]
-
-        # Try to place pattern using Shapely for precise collision detection
-        success = self._place_pattern(pattern, position, rotation, pattern_idx)
-
-        # Track statistics about this placement for better learning
-        placement_quality = 0.0
-        pattern_area = 0.0
-
-        if success:
-            # Calculate reward using enhanced reward function
-            reward = self._calculate_reward()
-
-            # Calculate additional metrics for pattern placement quality
-            # Measure how well this pattern fits with existing patterns
-            if "contours" in pattern and pattern["contours"]:
-                try:
-                    pattern_area = cv2.contourArea(pattern["contours"][0])
-                except Exception:
-                    # Fallback to dimensions if contour area calculation fails
-                    if "dimensions" in pattern:
-                        width, height = pattern["dimensions"]
-                        pattern_area = float(width) * float(height)
-
-            # Calculate placement quality metrics
-            # Higher value indicates better placement
-            placement_quality = self._calculate_placement_quality(
-                pattern_idx, position, rotation
-            )
-
-            # Add the placement to tracking
-            self.placed_patterns.append(
-                {
-                    "pattern": pattern,
-                    "position": position,
-                    "rotation": rotation,
-                    "pattern_idx": pattern_idx,
-                    "quality": placement_quality,
-                    "area": pattern_area,
-                }
-            )
-            self.available_patterns.remove(pattern_idx)
-        else:
-            # Enhanced penalty for invalid placement that gets worse as we place more patterns
-            # This encourages the agent to make valid placements, especially in later stages
-            progress = len(self.placed_patterns) / max(1, len(self.patterns))
-            reward = -1.0 - progress  # Penalty increases as more patterns are placed
 
         # Update state
-        self.current_state = self._get_state()
+        if success:
+            # Track pattern placement
+            self._track_placed_pattern(pattern, (x, y), rotation, self.current_pattern_idx)
+            self.current_pattern_idx += 1
 
         # Check if episode is done
-        terminated = len(self.placed_patterns) == len(self.patterns)
+        done = (
+            self.current_pattern_idx >= len(self.patterns)
+            # Comment out for now, can uncomment after fixing _has_valid_placements
+            # or not self._has_valid_placements()
+        )
 
-        # Add a maximum step limit to prevent very long episodes
-        max_steps = len(self.patterns) * 3  # Allow multiple attempts per pattern
-        truncated = len(self.placed_patterns) > max_steps  # Truncate if too many steps
-
-        # Enhanced info dictionary with more detailed metrics
+        # Create info dictionary with additional metrics
         info = {
             "success": success,
-            "utilization": self._calculate_utilization(),
-            "remaining_patterns": len(self.patterns) - len(self.placed_patterns),
-            "placement_quality": placement_quality,
-            "compactness": self._calculate_compactness(),
-            "edge_distance": self._calculate_edge_distance(),
-            "pattern_distribution": self._calculate_pattern_distribution(),
+            "utilization": utilization_reward,
+            "current_pattern": self.current_pattern_idx,
+            "total_patterns": len(self.patterns),
+            "placed_count": len(self.placed_patterns) if hasattr(self, "placed_patterns") else 0
         }
 
-        return self.current_state, reward, terminated, truncated, info
+        return self._get_observation(), reward, done, False, info
 
-    def _calculate_placement_quality(
-        self, pattern_idx: int, position: Tuple[int, int], rotation: float
-    ) -> float:
-        """Calculate how good a pattern placement is based on its relationship to other patterns
-
-        Evaluates:
-        1. Closeness to other patterns (tighter packing)
-        2. Alignment with cloth edges and other patterns
-        3. Material utilization improvement
-
-        Returns:
-            Quality score between 0.0 and 1.0
-        """
-        # Start with base quality score
-        quality = 0.5
-
-        # Nothing to compare against if this is the first pattern
-        if not self.placed_patterns:
-            return quality
-
-        # Get pattern polygon
-        if (
-            pattern_idx >= len(self.pattern_polygons)
-            or self.pattern_polygons[pattern_idx] is None
-        ):
-            return quality
-
-        pattern_polygon = self.pattern_polygons[pattern_idx]
-
-        # Rotate and translate to position
-        placed_polygon = sa.rotate(pattern_polygon, rotation, origin=(0, 0))
-        placed_polygon = sa.translate(placed_polygon, position[0], position[1])
-
-        # Calculate minimum distance to any other placed pattern
-        min_distance = float("inf")
-        alignment_score = 0.0
-
-        for placed in self.placed_patterns:
-            placed_pattern_idx = placed["pattern_idx"]
-            placed_pos = placed["position"]
-            placed_rot = placed["rotation"]
-
-            if (
-                placed_pattern_idx < len(self.pattern_polygons)
-                and self.pattern_polygons[placed_pattern_idx] is not None
-            ):
-
-                # Get the polygon for the placed pattern
-                existing_poly = self.pattern_polygons[placed_pattern_idx]
-                existing_poly = sa.rotate(existing_poly, placed_rot, origin=(0, 0))
-                existing_poly = sa.translate(
-                    existing_poly, placed_pos[0], placed_pos[1]
-                )
-
-                # Calculate distance between polygons
-                try:
-                    # Distance between polygons (0 if they touch)
-                    distance = placed_polygon.distance(existing_poly)
-                    min_distance = min(min_distance, distance)
-
-                    # Check alignment of edges for better packing
-                    # Closer to 0/90/180/270 degrees is better alignment
-                    angle_diff = abs((rotation - placed_rot) % 90)
-                    angle_alignment = 1.0 - (min(angle_diff, 90 - angle_diff) / 45.0)
-                    alignment_score += angle_alignment / len(self.placed_patterns)
-                except Exception:
-                    pass
-
-        # Normalize distance (closer is better)
-        max_possible_dist = np.sqrt(self.cloth_width**2 + self.cloth_height**2)
-        distance_score = 1.0 - min(min_distance / max_possible_dist, 1.0)
-
-        # Calculate edge alignment with cloth borders
-        border_alignment = 0.0
-
-        # Check how close to cloth edges
-        left_edge_dist = position[0]
-        right_edge_dist = self.cloth_width - position[0]
-        top_edge_dist = position[1]
-        bottom_edge_dist = self.cloth_height - position[1]
-
-        # Reward being close to edges but not too close
-        edge_distances = [
-            left_edge_dist,
-            right_edge_dist,
-            top_edge_dist,
-            bottom_edge_dist,
-        ]
-        for dist in edge_distances:
-            if dist < 10:  # Very close to edge
-                border_alignment += 0.25
-
-        # Combine scores with different weights
-        quality = (
-            0.4 * distance_score  # Closeness to other patterns
-            + 0.3 * alignment_score  # Alignment with other patterns
-            + 0.3 * border_alignment  # Alignment with cloth edges
-        )
-
-        return min(1.0, max(0.0, quality))
-
-    def _place_pattern(
-        self,
-        pattern: Dict,
-        position: Tuple[int, int],
-        rotation: float,
-        pattern_polygon_idx: int = None,
-    ) -> bool:
-        """Attempt to place pattern at given position and rotation using Shapely
+    def _place_pattern(self, pattern: Dict, x: int, y: int, rotation: float, pattern_idx: int = 0) -> bool:
+        """Try to place a pattern on the cloth
 
         Args:
-            pattern: Dictionary with pattern data
-            position: (x, y) position to place the pattern
-            rotation: Rotation angle in degrees
-            pattern_polygon_idx: Index in pattern_polygons to use (for multi-piece patterns)
+            pattern: Pattern dictionary
+            x: X coordinate
+            y: Y coordinate
+            rotation: Rotation angle
+            pattern_idx: Optional pattern index for visualization
+
+        Returns:
+            True if placement was successful
         """
-        x, y = position
+        # Get pattern dimensions after rotation
+        width, height = self._get_rotated_dimensions(pattern, rotation)
 
-        # Use provided polygon index if available
-        if pattern_polygon_idx is not None and pattern_polygon_idx < len(
-            self.pattern_polygons
+        # Check if pattern fits within cloth boundaries
+        if (
+            x + width > self.cloth_data["width"]
+            or y + height > self.cloth_data["height"]
         ):
-            polygon_idx = pattern_polygon_idx
-        else:
-            # Find pattern index by comparing object identities
-            polygon_idx = -1
-            for i, p in enumerate(self.patterns):
-                if p is pattern:
-                    # Use the first matching polygon for this pattern
-                    for j, mapped_idx in enumerate(self.pattern_idx_map):
-                        if mapped_idx == i:
-                            polygon_idx = j
-                            break
-                    if polygon_idx >= 0:
-                        break
-
-            # If we couldn't find a polygon, try to use the idx field
-            if polygon_idx == -1:
-                pattern_idx = pattern.get("idx", -1)
-                # Find first polygon that maps to this pattern
-                for j, mapped_idx in enumerate(self.pattern_idx_map):
-                    if mapped_idx == pattern_idx:
-                        polygon_idx = j
-                        break
-
-        # If we still couldn't find a valid polygon, return failure
-        if polygon_idx == -1 or polygon_idx >= len(self.pattern_polygons):
             return False
 
-        if self.pattern_polygons[polygon_idx] is None:
+        # Create pattern mask for this position
+        pattern_mask = np.zeros_like(self.cloth_state)
+        pattern_mask[y:y + height, x:x + width] = 1
+
+        # Check for overlaps with existing patterns
+        if np.any(self.cloth_state & pattern_mask):
             return False
 
-        # Get the pattern polygon
-        pattern_polygon = self.pattern_polygons[polygon_idx]
-
-        # Rotate the polygon
-        rotated_polygon = sa.rotate(pattern_polygon, rotation, origin=(0, 0))
-
-        # Translate to position
-        placed_polygon = sa.translate(rotated_polygon, x, y)
-
-        # IMPORTANT: Get the actual cloth contour and use it for pattern placement
-        # Instead of just using a rectangle for the cloth boundary, we need to use 
-        # the actual cloth shape for proper pattern placement
-        
-        # Check if pattern is within cloth bounds with a small buffer
-        # Allow slight overlap with cloth edge (1% of cloth dimensions)
-        buffer_x = self.cloth_width * 0.01
-        buffer_y = self.cloth_height * 0.01
-        
-        # Use a more accurate cloth boundary if available in cloth_data
-        use_detailed_boundary = False
-        if hasattr(self, 'cloth_data') and 'cloth_mask' in self.cloth_data and self.cloth_data['cloth_mask'] is not None:
-            try:
-                # Create a more detailed cloth polygon from the mask
-                cloth_mask = self.cloth_data['cloth_mask']
-                if np.sum(cloth_mask) > 0:
-                    # Find contours in the mask
-                    contours, _ = cv2.findContours(
-                        cloth_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        # Check if pattern is fully contained within the cloth mask (if available)
+        if 'cloth_mask' in self.cloth_data and self.cloth_data['cloth_mask'] is not None:
+            cloth_mask = self.cloth_data['cloth_mask']
+            # Resize mask if dimensions don't match
+            if (cloth_mask.shape[0] != self.cloth_state.shape[0] or 
+                cloth_mask.shape[1] != self.cloth_state.shape[1]):
+                try:
+                    cloth_mask = cv2.resize(
+                        cloth_mask, 
+                        (self.cloth_state.shape[1], self.cloth_state.shape[0]),
+                        interpolation=cv2.INTER_NEAREST
                     )
-                    if contours and len(contours) > 0:
-                        # Use the largest contour as the cloth boundary
-                        largest_contour = max(contours, key=cv2.contourArea)
-                        if cv2.contourArea(largest_contour) > 100:
-                            # Convert OpenCV contour to shapely polygon
-                            cloth_points = largest_contour.squeeze()
-                            if len(cloth_points.shape) == 2 and cloth_points.shape[0] >= 3:
-                                detailed_cloth_poly = sg.Polygon(cloth_points)
-                                if detailed_cloth_poly.is_valid:
-                                    use_detailed_boundary = True
-                                    buffered_cloth = detailed_cloth_poly.buffer(-max(1, min(buffer_x, buffer_y)))
-            except Exception as e:
-                logger.warning(f"Error creating detailed cloth boundary: {e}")
-        
-        if not use_detailed_boundary:
-            # Use simple rectangular boundary as fallback
-            buffered_cloth = self.cloth_polygon.buffer(-max(1, min(buffer_x, buffer_y)))
-        
-        if not buffered_cloth.contains(placed_polygon):
-            # Try with a smaller buffer before rejecting
-            if not self.cloth_polygon.contains(placed_polygon):
-                return False
-
-        # Check overlap with already placed patterns, but allow slight overlap
-        for placed in self.placed_patterns:
-            placed_pattern_idx = placed["pattern_idx"]
-            placed_pos = placed["position"]
-            placed_rot = placed["rotation"]
-
-            if (
-                placed_pattern_idx < len(self.pattern_polygons)
-                and self.pattern_polygons[placed_pattern_idx] is not None
-            ):
-                existing_poly = self.pattern_polygons[placed_pattern_idx]
-                existing_poly = sa.rotate(existing_poly, placed_rot, origin=(0, 0))
-                existing_poly = sa.translate(
-                    existing_poly, placed_pos[0], placed_pos[1]
-                )
-
-                # Calculate intersection area
-                if placed_polygon.intersects(existing_poly):
-                    intersection = placed_polygon.intersection(existing_poly)
-                    overlap_area = intersection.area
-                    pattern_area = placed_polygon.area
-                    # Allow very small overlaps (less than 2% of pattern area)
-                    if overlap_area > 0.02 * pattern_area:
-                        return False
-
-        # Update the cloth space raster representation for visualization
-        pattern_mask = np.zeros_like(self.cloth_space)
-
-        # Convert Shapely polygon to OpenCV contour format
-        polygon_points = np.array(placed_polygon.exterior.coords).astype(int)[
-            :-1
-        ]  # Remove repeated last point
-        cv2.fillPoly(pattern_mask, [polygon_points], 1)
+                except Exception as e:
+                    # If resize fails, skip the cloth mask check
+                    pass
+            else:
+                # Check if pattern is at least MIN_PATTERN_COVERAGE within the cloth mask
+                pattern_area = np.sum(pattern_mask)
+                overlap_with_cloth = np.sum(pattern_mask & (cloth_mask > 0))
+                
+                # Only place if at least MIN_PATTERN_COVERAGE of pattern is within cloth
+                if overlap_with_cloth < pattern_area * PATTERN_FITTING["MIN_PATTERN_COVERAGE"]:
+                    return False
 
         # Place pattern
-        self.cloth_space = np.logical_or(self.cloth_space, pattern_mask).astype(
-            np.uint8
-        )
-
+        if pattern_idx > 0:
+            # Use pattern index + 1 for visualization (with different ID for each pattern)
+            self.cloth_state[y:y + height, x:x + width] = pattern_idx + 1
+        else:
+            # Use 1 for standard placement (binary mask)
+            self.cloth_state[y:y + height, x:x + width] = 1
+        
         return True
+        
+    def _track_placed_pattern(self, pattern: Dict, pos: Tuple[int, int], rotation: float, pattern_idx: int) -> None:
+        """Track a placed pattern
 
-    def _calculate_reward(self) -> float:
-        """Calculate reward based on multiple factors
+        Args:
+            pattern: Pattern dictionary
+            pos: (x, y) coordinates
+            rotation: Rotation angle
+            pattern_idx: Pattern index
+        """
+        if not hasattr(self, 'placed_patterns'):
+            self.placed_patterns = []
+            
+        # Add to placed patterns list
+        self.placed_patterns.append({
+            "pattern": pattern,
+            "x": pos[0],
+            "y": pos[1],
+            "rotation": rotation,
+            "pattern_idx": pattern_idx
+        })
+
+    def _get_rotated_dimensions(self, pattern: Dict, rotation: float) -> Tuple[int, int]:
+        """Get pattern dimensions after rotation
+
+        Args:
+            pattern: Pattern dictionary
+            rotation: Rotation angle
 
         Returns:
-            Combined reward value
+            Width and height after rotation
         """
-        utilization = self._calculate_utilization()
-        compactness = self._calculate_compactness()
-        edge_distance = self._calculate_edge_distance()
-        pattern_distribution = self._calculate_pattern_distribution()
-        valid_placement = 1.0  # All placements are valid at this point
+        width = pattern["width"]
+        height = pattern["height"]
 
-        # Weighted reward calculation with enhanced pattern distribution
-        reward = (
-            0.4 * utilization
-            + 0.3 * compactness
-            + 0.1 * edge_distance
-            + 0.1 * pattern_distribution
-            + 0.1 * valid_placement
-        )
-
-        return reward
-
-    def _calculate_pattern_distribution(self) -> float:
-        """Calculate how well patterns are distributed across the cloth
-
-        This rewards placements that utilize different areas of the cloth
-        rather than clustering all patterns in one area.
-
-        Returns:
-            Distribution score between 0.0 and 1.0
-        """
-        if not self.placed_patterns:
-            return 0.0
-
-        # Divide cloth into a grid of cells
-        grid_size = 8  # 8x8 grid
-        cell_width = self.cloth_width / grid_size
-        cell_height = self.cloth_height / grid_size
-
-        # Track which cells are occupied
-        occupied_cells = set()
-
-        # Count occupied cells
-        for placement in self.placed_patterns:
-            pos_x, pos_y = placement["position"]
-
-            # Calculate which cell this pattern's position falls into
-            cell_x = min(grid_size - 1, max(0, int(pos_x / cell_width)))
-            cell_y = min(grid_size - 1, max(0, int(pos_y / cell_height)))
-
-            # Add to occupied cells
-            occupied_cells.add((cell_x, cell_y))
-
-        # Calculate distribution score
-        # Normalize by total possible cells for better scaling with few patterns
-        max_occupied = min(len(self.placed_patterns) * 2, grid_size * grid_size)
-        distribution_score = len(occupied_cells) / max_occupied
-
-        return distribution_score
+        if rotation in [90, 270]:
+            return height, width
+        return width, height
 
     def _calculate_utilization(self) -> float:
-        """Calculate material utilization percentage
+        """Calculate cloth utilization
 
         Returns:
-            Ratio of used area to total area
+            Utilization ratio
         """
-        used_area = np.sum(self.cloth_space)
-        total_area = self.cloth_width * self.cloth_height
-        return used_area / total_area
-
-    def _calculate_compactness(self) -> float:
-        """Calculate how compactly patterns are placed
-
-        Returns:
-            Ratio of used area to bounding box area
-        """
-        if np.sum(self.cloth_space) == 0:
-            return 0.0
-
-        rows = np.any(self.cloth_space, axis=1)
-        cols = np.any(self.cloth_space, axis=0)
-
-        height = np.sum(rows)
-        width = np.sum(cols)
-
-        used_area = np.sum(self.cloth_space)
-        bounding_area = height * width
-
-        return used_area / bounding_area if bounding_area > 0 else 0.0
-
-    def _calculate_edge_distance(self) -> float:
-        """Calculate average distance to cloth edges
-
-        Returns:
-            Normalized average distance to edges
-        """
-        if not self.placed_patterns:
-            return 0.0
-
-        total_distance = 0
-        for placement in self.placed_patterns:
-            pos_x, pos_y = placement["position"]
-            distance_to_edge = min(
-                pos_x, pos_y, self.cloth_width - pos_x, self.cloth_height - pos_y
-            )
-            total_distance += distance_to_edge
-
-        return 1.0 - (
-            total_distance
-            / (len(self.placed_patterns) * max(self.cloth_width, self.cloth_height))
-        )
-
-    def _get_state(self) -> np.ndarray:
-        """Get current state representation with enhanced pattern information
-
-        Enhanced state representation with:
-        1. Current cloth space (occupied areas)
-        2. Next pattern to place
-        3. Distance transform for spatial awareness
-        4. Individual channels for all available patterns to enable planning
-
-        Returns:
-            State as stacked channels
-        """
-        try:
-            # Get core channels ensuring consistent types
-            cloth_space = self.cloth_space.astype(np.float32)
-            pattern_channel = self._get_pattern_channel().astype(np.float32)
-            distance_channel = self._get_distance_channel().astype(np.float32)
-
-            # Make sure all channels have the same shape
-            height, width = cloth_space.shape
-
-            # Ensure pattern channel has the same shape
-            if pattern_channel.shape != cloth_space.shape:
-                logger.warning(
-                    f"Pattern channel shape mismatch: {pattern_channel.shape} vs {cloth_space.shape}"
-                )
-                pattern_channel = np.zeros_like(cloth_space, dtype=np.float32)
-
-            # Ensure distance channel has the same shape
-            if distance_channel.shape != cloth_space.shape:
-                logger.warning(
-                    f"Distance channel shape mismatch: {distance_channel.shape} vs {cloth_space.shape}"
-                )
-                distance_channel = np.zeros_like(cloth_space, dtype=np.float32)
-
-            # Create channels for all patterns to help with planning
-            pattern_channels = []
-
-            # First add the core channels
-            pattern_channels = [cloth_space, pattern_channel, distance_channel]
-
-            # Then add a channel for each available pattern
-            for pattern_idx in self.available_patterns:
-                if pattern_idx < len(self.patterns):
-                    pattern = self.patterns[pattern_idx]
-                    pattern_mask = np.zeros_like(cloth_space)
-
-                    # Draw the pattern using its contours or dimensions
-                    if "contours" in pattern and pattern["contours"]:
-                        try:
-                            # Make sure contours are properly formatted for fillPoly
-                            contours_copy = []
-                            for contour in pattern["contours"]:
-                                if contour is not None and len(contour) > 0:
-                                    # Ensure contour is int32 and has correct shape
-                                    contour_copy = np.array(contour, dtype=np.int32)
-                                    if (
-                                        len(contour_copy.shape) == 3
-                                        and contour_copy.shape[1] == 1
-                                    ):
-                                        # Reshape from (n, 1, 2) to (n, 2) if needed
-                                        contour_copy = contour_copy.reshape(
-                                            (contour_copy.shape[0], 2)
-                                        )
-                                    contours_copy.append(contour_copy)
-
-                            if contours_copy:
-                                cv2.fillPoly(pattern_mask, contours_copy, 1)
-                            else:
-                                # If no valid contours, use fallback
-                                self._fallback_rectangle(pattern_mask, pattern)
-                        except Exception as e:
-                            logger.warning(f"Error drawing pattern mask: {e}")
-                            self._fallback_rectangle(pattern_mask, pattern)
-                    else:
-                        self._fallback_rectangle(pattern_mask, pattern)
-
-                    pattern_channels.append(pattern_mask)
-
-            # Pad with empty channels if we have fewer patterns than expected
-            expected_channels = 3 + len(self.patterns)
-            while len(pattern_channels) < expected_channels:
-                pattern_channels.append(np.zeros_like(cloth_space))
-
-            # Stack all channels
-            state = np.stack(pattern_channels).astype(np.float32)
-
-            return state
-        except Exception as e:
-            logger.warning(f"Error creating state: {e}")
-            # Return a default state of zeros (3 + number of patterns channels)
-            shape = self.cloth_space.shape
-            return np.zeros(
-                (3 + len(self.patterns), shape[0], shape[1]), dtype=np.float32
-            )
-
-    def _get_pattern_channel(self) -> np.ndarray:
-        """Create channel showing next pattern to place"""
-
-        if self.available_patterns:
-            # Get the first available pattern index
-            next_pattern_idx = self.available_patterns[0]
-            next_pattern = self.patterns[next_pattern_idx]
-            pattern_channel = np.zeros_like(self.cloth_space)
-
-            if "contours" in next_pattern and next_pattern["contours"]:
-                # Try to use contours
+        # Get total cloth area (using cloth mask if available)
+        if hasattr(self, 'cloth_data') and 'cloth_mask' in self.cloth_data and self.cloth_data['cloth_mask'] is not None:
+            cloth_mask = self.cloth_data['cloth_mask']
+            # Resize mask if dimensions don't match
+            if (cloth_mask.shape[0] != self.cloth_height or 
+                cloth_mask.shape[1] != self.cloth_width):
                 try:
-                    # Make sure contours are properly formatted for fillPoly
-                    contours_copy = []
-                    for contour in next_pattern["contours"]:
-                        if contour is not None and len(contour) > 0:
-                            # Ensure contour is int32 and has correct shape
-                            contour_copy = np.array(contour, dtype=np.int32)
-                            if (
-                                len(contour_copy.shape) == 3
-                                and contour_copy.shape[1] == 1
-                            ):
-                                # Reshape from (n, 1, 2) to (n, 2) if needed
-                                contour_copy = contour_copy.reshape(
-                                    (contour_copy.shape[0], 2)
-                                )
-                            contours_copy.append(contour_copy)
-
-                    if contours_copy:
-                        cv2.fillPoly(pattern_channel, contours_copy, 1)
-                    else:
-                        # If no valid contours, use fallback
-                        self._fallback_rectangle(pattern_channel, next_pattern)
-                except Exception as e:
-                    logger.warning(
-                        f"Error filling pattern polygon: {e}, using shapely fallback"
+                    cloth_mask = cv2.resize(
+                        cloth_mask, 
+                        (self.cloth_width, self.cloth_height),
+                        interpolation=cv2.INTER_NEAREST
                     )
-                    # Use shapely for fallback if available
-                    if (
-                        next_pattern_idx < len(self.pattern_polygons)
-                        and self.pattern_polygons[next_pattern_idx] is not None
-                    ):
-                        polygon = self.pattern_polygons[next_pattern_idx]
-                        # Center in the middle of the cloth
-                        center_x, center_y = (
-                            self.cloth_width // 2,
-                            self.cloth_height // 2,
-                        )
-                        # Get pattern centroid
-                        centroid = polygon.centroid
-                        # Translate to center
-                        centered_polygon = sa.translate(
-                            polygon, center_x - centroid.x, center_y - centroid.y
-                        )
-                        # Convert to numpy array for drawing
-                        polygon_points = np.array(
-                            centered_polygon.exterior.coords
-                        ).astype(int)[:-1]
-                        cv2.fillPoly(pattern_channel, [polygon_points], 1)
-                    else:
-                        self._fallback_rectangle(pattern_channel, next_pattern)
-            else:
-                # Fallback to rectangle if no contours
-                self._fallback_rectangle(pattern_channel, next_pattern)
+                except Exception as e:
+                    # Fallback to default calculation
+                    total_area = self.cloth_width * self.cloth_height
+            
+            total_area = np.sum(cloth_mask > 0)
+            if total_area == 0:  # Safety check
+                total_area = self.cloth_width * self.cloth_height
+        else:
+            total_area = self.cloth_width * self.cloth_height
+            
+        # Calculate used area - only count pixels that are inside the cloth mask
+        if hasattr(self, 'cloth_data') and 'cloth_mask' in self.cloth_data and self.cloth_data['cloth_mask'] is not None:
+            cloth_mask = self.cloth_data['cloth_mask']
+            # Resize mask if dimensions don't match
+            if (cloth_mask.shape[0] != self.cloth_height or 
+                cloth_mask.shape[1] != self.cloth_width):
+                try:
+                    cloth_mask = cv2.resize(
+                        cloth_mask, 
+                        (self.cloth_width, self.cloth_height),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                except Exception:
+                    # If resize fails, just use the full state
+                    used_area = np.sum(self.cloth_state)
+                    return used_area / total_area
+                    
+            # Only count area within the cloth mask
+            used_area = np.sum(self.cloth_state & (cloth_mask > 0))
+        else:
+            used_area = np.sum(self.cloth_state)
+            
+        # Return the ratio (with safety check)
+        if total_area > 0:
+            return used_area / total_area
+        return 0.0
 
-            return pattern_channel
-
-        return np.zeros_like(self.cloth_space)
-
-    def _fallback_rectangle(self, pattern_channel: np.ndarray, pattern: Dict) -> None:
-        """Draw a fallback rectangle on the pattern channel"""
-        try:
-            if "dimensions" in pattern:
-                # Get dimensions (handle both tensor and numpy types)
-                dimensions = pattern["dimensions"]
-                if hasattr(dimensions, "tolist"):  # Handle torch tensors
-                    dimensions = dimensions.tolist()
-
-                width, height = map(int, dimensions)
-                # Ensure positive dimensions
-                width, height = max(5, width), max(5, height)
-                # Place at center
-                center_x = self.cloth_width // 2
-                center_y = self.cloth_height // 2
-                x1, y1 = center_x - width // 2, center_y - height // 2
-                x2, y2 = x1 + width, y1 + height
-                # Ensure coordinates are within cloth boundaries
-                x1 = max(0, min(x1, self.cloth_width - 10))
-                y1 = max(0, min(y1, self.cloth_height - 10))
-                x2 = max(x1 + 5, min(x2, self.cloth_width))
-                y2 = max(y1 + 5, min(y2, self.cloth_height))
-                cv2.rectangle(pattern_channel, (x1, y1), (x2, y2), 1, -1)
-            else:
-                # If no dimensions available, draw a small rectangle at center
-                center_x, center_y = self.cloth_width // 2, self.cloth_height // 2
-                size = min(self.cloth_width, self.cloth_height) // 10
-                cv2.rectangle(
-                    pattern_channel,
-                    (center_x - size, center_y - size),
-                    (center_x + size, center_y + size),
-                    1,
-                    -1,
-                )
-        except Exception as e:
-            logger.warning(f"Error creating fallback rectangle: {e}")
-            # Last resort: place a small square in the center
-            center_x, center_y = self.cloth_width // 2, self.cloth_height // 2
-            cv2.rectangle(
-                pattern_channel,
-                (center_x - 10, center_y - 10),
-                (center_x + 10, center_y + 10),
-                1,
-                -1,
-            )
-
-    def _get_distance_channel(self) -> np.ndarray:
-        """Create distance transform channel"""
-
-        try:
-            # Distance transform helps the model understand spatial relationships
-            distance_map = cv2.distanceTransform(
-                (1 - self.cloth_space).astype(np.uint8), cv2.DIST_L2, 5
-            )
-
-            # Normalize the distance values to 0-1 range
-            if np.max(distance_map) > 0:
-                distance_map = distance_map / np.max(distance_map)
-
-            return distance_map
-        except Exception as e:
-            logger.warning(f"Error creating distance transform: {e}")
-            # Return zeros if distance transform fails
-            return np.zeros_like(self.cloth_space, dtype=np.float32)
-
-    def render(self):
-        """Render the current state of the environment"""
-
-        if self.render_mode is None:
-            return None
-
-        import matplotlib.pyplot as plt
-
-        # Create a figure with the cloth space
-        fig = plt.figure(figsize=(10, 10))
-        plt.imshow(self.cloth_space, cmap="gray")
-        plt.title(f"Cloth Space (Utilization: {self._calculate_utilization():.4f})")
-
-        if self.render_mode == "rgb_array":
-            # Return an RGB array
-            fig.canvas.draw()
-            img = np.array(fig.canvas.renderer.buffer_rgba())
-            plt.close(fig)
-            return img
-        elif self.render_mode == "human":
-            # Display the figure
-            plt.show()
-            plt.close(fig)
-            return None
-
-
-class ManagerNetwork(nn.Module):
-    """High-level network for pattern selection
-
-    This network determines which pattern to place next based on the
-    current state of the cloth space and available patterns.
-
-    Enhanced to better understand pattern relationships and optimize placement sequence.
-    """
-
-    def __init__(self, input_channels: int, hidden_dim: int, num_patterns: int):
-        """Initialize the manager network
+    def _is_efficient_placement(self, x: int, y: int, pattern: Dict, rotation: float) -> bool:
+        """Check if pattern placement is efficient
 
         Args:
-            input_channels: Number of input channels in the state
-            hidden_dim: Size of hidden layer
-            num_patterns: Number of patterns to choose from
-        """
-        super().__init__()
+            x: X coordinate
+            y: Y coordinate
+            pattern: Pattern dictionary
+            rotation: Rotation angle
 
-        # IMPORTANT: Model was trained with 4 input channels, so we need to adapt
-        # For compatibility with saved model, we use 4 input channels
-        self.input_adapter = nn.Conv2d(input_channels, 4, 1, bias=False)
+        Returns:
+            True if placement is efficient
+        """
+        # Check if pattern is placed next to another pattern or cloth edge
+        width, height = self._get_rotated_dimensions(pattern, rotation)
         
-        # Convolutional layers for processing spatial information with more filters
-        # and better feature extraction by using deeper network
-        self.conv = nn.Sequential(
-            # First conv block with more filters
-            nn.Conv2d(4, 64, 3, padding=1),  # Fixed to 4 input channels for compatibility
-            nn.BatchNorm2d(64),
+        # Check left edge
+        if x > 0 and np.any(self.cloth_state[y:y + height, x - 1]):
+            return True
+            
+        # Check right edge
+        if x + width < self.cloth_width and np.any(self.cloth_state[y:y + height, x + width]):
+            return True
+            
+        # Check top edge
+        if y > 0 and np.any(self.cloth_state[y - 1, x:x + width]):
+            return True
+            
+        # Check bottom edge
+        if y + height < self.cloth_height and np.any(self.cloth_state[y + height, x:x + width]):
+            return True
+            
+        return False
+
+    def _has_valid_placements(self) -> bool:
+        """Check if there are any valid placements remaining
+
+        Returns:
+            True if valid placements exist
+        """
+        if self.current_pattern_idx >= len(self.patterns):
+            return False
+
+        pattern = self.patterns[self.current_pattern_idx]
+        
+        # Try each possible rotation
+        for rotation in self.rotation_angles:
+            width, height = self._get_rotated_dimensions(pattern, rotation)
+            
+            # Check each possible position
+            for y in range(self.cloth_height - height + 1):
+                for x in range(self.cloth_width - width + 1):
+                    # Check if position is valid
+                    pattern_mask = np.zeros_like(self.cloth_state)
+                    pattern_mask[y:y + height, x:x + width] = 1
+                    
+                    if not np.any(self.cloth_state & pattern_mask):
+                        return True
+                        
+        return False
+
+    def _get_observation(self) -> Dict:
+        """Get current observation
+
+        Returns:
+            Observation dictionary
+        """
+        # Get current pattern
+        if self.current_pattern_idx < len(self.patterns):
+            current_pattern = self.patterns[self.current_pattern_idx]
+        else:
+            current_pattern = self.patterns[-1]  # Use last pattern as placeholder
+
+        # Create pattern mask
+        pattern_mask = np.zeros_like(self.cloth_state)
+        # Get height and width ensuring they are integers
+        try:
+            p_height = int(current_pattern["height"])
+            p_width = int(current_pattern["width"])
+            # Ensure they are within bounds and at least 1
+            p_height = max(1, min(p_height, self.cloth_height))
+            p_width = max(1, min(p_width, self.cloth_width))
+            pattern_mask[:p_height, :p_width] = 1
+        except (ValueError, TypeError, KeyError):
+            # Fallback for any issues
+            pattern_mask[:1, :1] = 1
+
+        # Calculate pattern info
+        remaining_patterns = len(self.patterns) - self.current_pattern_idx
+        try:
+            p_width = float(current_pattern.get("width", 50))
+            p_height = float(current_pattern.get("height", 50))
+            pattern_info = np.array(
+                [
+                    p_width / self.cloth_width,
+                    p_height / self.cloth_height,
+                    (p_width * p_height) / (self.cloth_width * self.cloth_height),
+                    remaining_patterns / len(self.patterns),
+                ],
+                dtype=np.float32,
+            )
+        except (ValueError, TypeError):
+            # Default values if conversion fails
+            pattern_info = np.array([0.1, 0.1, 0.01, 
+                          remaining_patterns / len(self.patterns)], 
+                          dtype=np.float32)
+
+        return {
+            "cloth_state": self.cloth_state[..., np.newaxis].astype(np.float32),
+            "current_pattern": pattern_mask[..., np.newaxis].astype(np.float32),
+            "pattern_info": pattern_info,
+        }
+
+
+class ClothCNN(BaseFeaturesExtractor):
+    """
+    CNN feature extractor for the cloth packing environment.
+
+    This extracts features from the cloth state and available patterns
+    in a way that's useful for making pattern placing decisions.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = MODEL["FEATURE_DIM"]):
+        """
+        Initialize the feature extractor.
+
+        Args:
+            observation_space: The environment's observation space
+            features_dim: Output feature dimension
+        """
+        super(ClothCNN, self).__init__(observation_space, features_dim)
+
+        # Input channels from observation space
+        n_input_channels = observation_space.shape[0]
+        logger.info(f"ClothCNN initializing with {n_input_channels} input channels")
+        logger.info(f"Observation space shape: {observation_space.shape}")
+
+        # Simple CNN architecture
+        self.cnn = nn.Sequential(
+            # First convolutional block
+            nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
+            # Second convolutional block
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),
-            # Second conv block with deeper features
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
+            # Third convolutional block
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            # Adaptive pooling to handle variable sized inputs
+            # Global pooling
             nn.AdaptiveAvgPool2d((8, 8)),
+            nn.Flatten(),
         )
 
-        # Improved fully connected layers for pattern selection
-        # with attention to pattern relationships
-        self.fc = nn.Sequential(
-            nn.Linear(128 * 8 * 8, hidden_dim),
+        # Compute output size of CNN - with error handling
+        try:
+            with torch.no_grad():
+                sample = torch.zeros((1,) + observation_space.shape).float()
+                logger.info(f"Created sample tensor of shape {sample.shape}")
+                n_flatten = self.cnn(sample).shape[1]
+                logger.info(f"Flattened features shape: {n_flatten}")
+        except Exception as e:
+            logger.error(f"Error during CNN output size computation: {e}")
+            # Use a reasonable default
+            n_flatten = MODEL["DEFAULT_FLATTENED_SIZE"]
+            logger.warning(f"Using default flattened size: {n_flatten}")
+
+        # Final linear layers to get features_dim output
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, MODEL["HIDDEN_DIM"]),
             nn.ReLU(),
-            nn.Dropout(0.3),  # Prevent overfitting
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(MODEL["HIDDEN_DIM"], features_dim),
             nn.ReLU(),
-            # For compatibility with saved model, output is 1
-            nn.Linear(hidden_dim // 2, 1),  # Fixed to 1 output for compatibility
         )
 
-        # Global attention mechanism to focus on important cloth areas
-        self.attention = nn.Sequential(
-            nn.Conv2d(128, 1, 1),  # 1x1 conv to produce attention map
-            nn.Sigmoid(),  # Normalize attention weights
-        )
-
-    def forward(self, x):
-        """Forward pass through the network with attention mechanism
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the CNN
 
         Args:
-            x: Input state tensor
+            observations: Input observation tensor
 
         Returns:
-            Pattern selection probabilities
+            Extracted features
         """
-        # Adapt input channels to match pretrained model
-        x = self.input_adapter(x)
-        
-        # Extract features through convolutional layers
-        features = self.conv(x)
-
-        # Apply attention mechanism
-        attention_weights = self.attention(features)
-        attended_features = features * attention_weights
-
-        # Flatten and pass through fully connected layers
-        x = attended_features.view(attended_features.size(0), -1)
-        
-        # Get output from model (single value)
-        logits = self.fc(x)
-        
-        # For compatibility, expand to the right number of patterns
-        # The model was trained with a single output, but we need to map it to multiple patterns
-        batch_size = x.size(0)
-        expanded_logits = logits.expand(batch_size, 3)  # Expand to 3 patterns
-        
-        # Apply softmax to get probabilities
-        sequence_probs = F.softmax(expanded_logits, dim=1)
-        return sequence_probs
+        features = self.cnn(observations)
+        return cast(torch.Tensor, self.linear(features))
 
 
-class WorkerNetwork(nn.Module):
-    """Low-level network for pattern placement
+class PatternFittingModule:
+    """Module for fitting patterns onto cloth
 
-    This network determines where and at what rotation to place a selected pattern.
-
-    Enhanced with deeper feature extraction and advanced placement heatmap generation
-    to better optimize pattern placement for material utilization.
+    Main interface for pattern fitting functionality using reinforcement learning.
     """
 
-    def __init__(
-        self, input_channels: int, num_rotations: int, cloth_dims: Tuple[int, int]
-    ):
-        """Initialize the worker network
+    def __init__(self, model_path: Optional[str] = None):
+        """Initialize the pattern fitting module
 
         Args:
-            input_channels: Number of input channels in the state
-            num_rotations: Number of possible rotation angles
-            cloth_dims: Dimensions of the cloth (height, width)
+            model_path: Path to saved model or None
         """
-        super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_path = model_path
+        self.model: Optional[PPO] = None
+        self.rotation_angles = PATTERN_FITTING["ROTATION_ANGLES"]
 
-        self.cloth_height, self.cloth_width = cloth_dims
-        
-        # IMPORTANT: Model was trained with different input channels, so we need to adapt
-        # For compatibility with saved model, we adapt to 5 channels (4 + 1)
-        self.input_adapter = nn.Conv2d(input_channels, 5, 1, bias=False)
+        logger.info(f"Pattern Fitting Module initialized on device: {self.device}")
 
-        # Enhanced convolutional backbone for better spatial understanding
-        # Using ResNet-like skip connections for better gradient flow
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(5, 64, 3, padding=1),  # Fixed to 5 input channels for compatibility
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-        )
-
-        self.conv2 = nn.Sequential(
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-        )
-
-        self.conv3 = nn.Sequential(
-            nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-        )
-
-        # Global pooling to get fixed-size feature regardless of input dimensions
-        self.global_pool = nn.AdaptiveAvgPool2d((8, 8))
-
-        # Enhanced placement head: U-Net style decoder with skip connections
-        # for more precise placement predictions with spatial context awareness
-        self.upsample1 = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, 2, stride=2),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-        )
-
-        self.upsample2 = nn.Sequential(
-            nn.ConvTranspose2d(
-                256, 64, 2, stride=2
-            ),  # 256 = 128 + 128 (skip connection)
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-        )
-
-        # Final upsampling to cloth dimensions with refinement
-        self.placement_head = nn.Sequential(
-            nn.Upsample(
-                size=(self.cloth_height, self.cloth_width),
-                mode="bilinear",
-                align_corners=False,
-            ),
-            nn.Conv2d(128, 64, 3, padding=1),  # 128 = 64 + 64 (skip connection)
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 32, 3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 1, 1),  # Final 1x1 conv for heatmap
-        )
-
-        # Enhanced rotation head with deeper MLP
-        self.rotation_head = nn.Sequential(
-            nn.Linear(256 * 8 * 8, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, num_rotations),
-        )
-
-        # Attention mechanism for emphasizing important regions
-        self.attention = nn.Sequential(nn.Conv2d(256, 1, 1), nn.Sigmoid())
-
-    def forward(self, x):
-        """Forward pass through the network with skip connections
+    def prepare_data(
+        self, cloth_data: Dict, patterns_data: List[Dict]
+    ) -> Tuple[Dict, List[Dict]]:
+        """Prepare cloth and patterns data for the environment
 
         Args:
-            x: Input state tensor with pattern
+            cloth_data: Dictionary with cloth properties
+            patterns_data: List of pattern dictionaries
 
         Returns:
-            Tuple of (placement_map, rotation_probabilities)
+            Tuple of (processed_cloth, processed_patterns)
         """
-        # Adapt input channels to match pretrained model
-        x = self.input_adapter(x)
-        
-        # Extract features with skip connections for U-Net style architecture
-        conv1_features = self.conv1(x)
-        conv2_features = self.conv2(conv1_features)
-        conv3_features = self.conv3(conv2_features)
+        # Process cloth data
+        processed_cloth = self._process_cloth_data(cloth_data)
 
-        # Apply attention to highest level features
-        attention_weights = self.attention(conv3_features)
-        attended_features = conv3_features * attention_weights
+        # Process patterns data
+        processed_patterns = self._process_patterns_data(patterns_data, processed_cloth)
 
-        # Feature extraction for rotation prediction
-        pooled_features = self.global_pool(attended_features)
-        flat_features = pooled_features.view(pooled_features.size(0), -1)
+        logger.info(f"Prepared {len(processed_patterns)} patterns for fitting")
+        return processed_cloth, processed_patterns
 
-        # Generate rotation probabilities
-        rotation_logits = self.rotation_head(flat_features)
-        rotation_probs = F.softmax(rotation_logits, dim=1)
-
-        # Generate placement heatmap using U-Net style decoder with skip connections
-        up1 = self.upsample1(attended_features)
-
-        # Check and adjust feature dimensions if necessary
-        # Fix for tensor size mismatch: Expected size 250 but got size 251
-        if up1.size(2) != conv2_features.size(2) or up1.size(3) != conv2_features.size(
-            3
-        ):
-            up1 = F.interpolate(
-                up1,
-                size=(conv2_features.size(2), conv2_features.size(3)),
-                mode="bilinear",
-                align_corners=False,
-            )
-
-        # Concatenate with skip connection from encoder
-        cat1 = torch.cat([up1, conv2_features], dim=1)
-
-        up2 = self.upsample2(cat1)
-
-        # Also ensure the second upsampling matches dimensions
-        if up2.size(2) != conv1_features.size(2) or up2.size(3) != conv1_features.size(
-            3
-        ):
-            up2 = F.interpolate(
-                up2,
-                size=(conv1_features.size(2), conv1_features.size(3)),
-                mode="bilinear",
-                align_corners=False,
-            )
-
-        # Concatenate with skip connection from encoder
-        cat2 = torch.cat([up2, conv1_features], dim=1)
-
-        # Final placement map
-        placement_map = self.placement_head(cat2)
-
-        return placement_map, rotation_probs
-
-
-class HierarchicalRL:
-    """Hierarchical Reinforcement Learning for pattern packing
-
-    This class implements a two-level hierarchical reinforcement learning approach
-    with a manager network for pattern selection and a worker network for placement.
-
-    References:
-    - "Planning Irregular Object Packing via Hierarchical Reinforcement Learning" (Wang et al., 2022)
-    - "Tree Search + Reinforcement Learning for Two-Dimensional Cutting Stock Problem
-       With Complex Constraints" (Zhang et al., 2023)
-    """
-
-    def __init__(self, env: PackingEnvironment, device: torch.device = None):
-        """Initialize the hierarchical RL agent
+    def _process_cloth_data(self, cloth_data: Dict) -> Dict:
+        """Process cloth data for the environment
 
         Args:
-            env: Packing environment
-            device: Computation device (CPU/GPU)
+            cloth_data: Raw cloth data dictionary
+
+        Returns:
+            Processed cloth data dictionary
         """
-        self.env = env
-        self.device = (
-            device
-            if device
-            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        processed_cloth = cloth_data.copy()
+
+        # Use cloth mask if available
+        self._process_cloth_mask(processed_cloth)
+
+        # Ensure valid dimensions
+        self._ensure_valid_cloth_dimensions(processed_cloth)
+
+        # Scale down very large cloth
+        self._scale_cloth_if_needed(processed_cloth)
+
+        return processed_cloth
+
+    def _process_cloth_mask(self, cloth_data: Dict) -> None:
+        """Process cloth mask to extract contours and dimensions"""
+        cloth_mask = cloth_data.get("cloth_mask", None)
+        if cloth_mask is not None and np.sum(cloth_mask) > 0:
+            try:
+                # Find the largest contour directly
+                contours, _ = cv2.findContours(
+                    cloth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                
+                if contours:
+                    # Get the largest contour by area
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    area = cv2.contourArea(largest_contour)
+                    
+                    # Only process if area is significant
+                    if area > IMAGE_PROCESSING["MIN_DIMENSION"]:
+                        # Get bounding rectangle
+                        x, y, w, h = cv2.boundingRect(largest_contour)
+                        
+                        # Store the contour and dimensions
+                        cloth_data["contours"] = [largest_contour]
+                        cloth_data["dimensions"] = np.array([w, h], dtype=np.float32)
+                        cloth_data["area"] = area
+                        
+                        # Create a simplified polygon for pattern fitting
+                        cloth_data["cloth_polygon"] = sg.Polygon(largest_contour.squeeze())
+                        
+            except Exception as e:
+                logger.warning(f"Error processing cloth mask: {e}")
+
+    def _ensure_valid_cloth_dimensions(self, cloth_data: Dict) -> None:
+        """Ensure cloth has valid dimensions
+
+        Args:
+            cloth_data: Cloth data dictionary to be modified
+        """
+        dimensions = cloth_data.get("dimensions", None)
+        if dimensions is None or np.any(np.array(dimensions) < IMAGE_PROCESSING["MIN_DIMENSION"]):
+            dimensions = np.array([IMAGE_PROCESSING["STANDARD_IMAGE_SIZE"], IMAGE_PROCESSING["STANDARD_IMAGE_SIZE"]], dtype=np.float32)
+            cloth_data["dimensions"] = dimensions
+
+    def _scale_cloth_if_needed(self, cloth_data: Dict) -> None:
+        """Scale down cloth if it's too large
+
+        Args:
+            cloth_data: Cloth data dictionary to be modified
+        """
+        cloth_width, cloth_height = cloth_data["dimensions"]
+        max_size = IMAGE_PROCESSING["MAX_CLOTH_SIZE"]
+
+        if cloth_width > max_size or cloth_height > max_size:
+            scale = max_size / max(cloth_width, cloth_height)
+            cloth_data["dimensions"] = (cloth_width * scale, cloth_height * scale)
+
+            # Scale contours if they exist
+            if "contours" in cloth_data and cloth_data["contours"]:
+                try:
+                    for i, contour in enumerate(cloth_data["contours"]):
+                        cloth_data["contours"][i] = contour * scale
+                except Exception as e:
+                    logger.warning(f"Error scaling contours: {e}")
+
+    def _process_patterns_data(
+        self, patterns_data: List[Dict], processed_cloth: Dict
+    ) -> List[Dict]:
+        """Process patterns data for the environment
+
+        Args:
+            patterns_data: List of raw pattern dictionaries
+            processed_cloth: Processed cloth data dictionary
+
+        Returns:
+            List of processed pattern dictionaries
+        """
+        processed_patterns = []
+        cloth_width, cloth_height = processed_cloth["dimensions"]
+        max_size = 512
+        need_scaling = cloth_width > max_size or cloth_height > max_size
+        scale = max_size / max(cloth_width, cloth_height) if need_scaling else 1.0
+
+        for pattern in patterns_data:
+            try:
+                processed_pattern = pattern.copy()
+
+                # Ensure pattern has valid contours
+                if (
+                    "contours" not in processed_pattern
+                    or not processed_pattern["contours"]
+                ):
+                    self._create_contours_from_dimensions(processed_pattern)
+
+                # Add width and height to the pattern directly
+                if "dimensions" in processed_pattern:
+                    dims = processed_pattern["dimensions"]
+                    if hasattr(dims, "tolist"):
+                        dims = dims.tolist()
+                    pattern_width, pattern_height = map(float, dims)
+                    
+                    # Scale if values are too small (normalized)
+                    if pattern_width < 1.0 and pattern_height < 1.0:
+                        pattern_width = int(pattern_width * processed_cloth["width"] * 0.2)
+                        pattern_height = int(pattern_height * processed_cloth["height"] * 0.2)
+                    
+                    processed_pattern["width"] = pattern_width
+                    processed_pattern["height"] = pattern_height
+                else:
+                    # Default sizes if dimensions not available
+                    processed_pattern["width"] = 50
+                    processed_pattern["height"] = 50
+
+                # Scale patterns if cloth was scaled
+                if need_scaling:
+                    self._scale_pattern_contours(processed_pattern, scale)
+                    processed_pattern["width"] = processed_pattern["width"] * scale
+                    processed_pattern["height"] = processed_pattern["height"] * scale
+
+                processed_patterns.append(processed_pattern)
+            except Exception as e:
+                logger.warning(f"Error processing pattern: {e}")
+
+        return processed_patterns
+
+    def _create_contours_from_dimensions(self, pattern: Dict) -> None:
+        """Create rectangle contour from dimensions
+
+        Args:
+            pattern: Pattern data dictionary to be modified
+        """
+        if "dimensions" in pattern:
+            # Create rectangle contour from dimensions
+            dims = pattern["dimensions"]
+            if hasattr(dims, "tolist"):
+                dims = dims.tolist()
+            width, height = map(float, dims)
+
+            # Create rectangle
+            rect = np.array(
+                [[[0, 0]], [[width, 0]], [[width, height]], [[0, height]]],
+                dtype=np.float32,
+            )
+
+            pattern["contours"] = [rect]
+
+    def _scale_pattern_contours(self, pattern: Dict, scale: float) -> None:
+        """Scale pattern contours by given factor
+
+        Args:
+            pattern: Pattern data dictionary to be modified
+            scale: Scale factor to apply
+        """
+        try:
+            for i, contour in enumerate(pattern["contours"]):
+                pattern["contours"][i] = contour * scale
+        except Exception as e:
+            logger.warning(f"Error scaling pattern contours: {e}")
+
+    def train(
+        self,
+        cloth_data: Dict,
+        patterns_data: List[Dict],
+        num_episodes: int = 1,
+        num_timesteps: int = 50000,
+    ) -> Dict:
+        """Train the pattern fitting model
+
+        Args:
+            cloth_data: Dictionary with cloth properties
+            patterns_data: List of pattern dictionaries
+            num_episodes: Number of training episodes (for compatibility with main.py)
+            num_timesteps: Number of training timesteps
+
+        Returns:
+            Training result dictionary
+        """
+        # Convert episodes to timesteps if provided
+        actual_timesteps = num_timesteps
+        if num_episodes > 0:
+            actual_timesteps = num_episodes * 5000  # Approximate conversion
+
+        # Prepare data
+        processed_cloth, processed_patterns = self.prepare_data(
+            cloth_data, patterns_data
         )
 
-        # Get cloth dimensions
-        cloth_dims = (self.env.cloth_height, self.env.cloth_width)
+        # Create environment
+        env = PackingEnvironment(
+            cloth_data=processed_cloth,
+            patterns=processed_patterns,
+            rotation_angles=self.rotation_angles,
+        )
 
-        # Initialize networks
-        # Account for all channels in observation space (3 + number of patterns)
-        self.manager = ManagerNetwork(
-            input_channels=env.observation_space.shape[
-                0
-            ],  # All channels from observation space
-            hidden_dim=256,
-            num_patterns=len(env.patterns),
-        ).to(self.device)
+        # Create PPO policy with custom CNN and improved architecture
+        policy_kwargs = {
+            "features_extractor_class": ClothCNN,
+            "features_extractor_kwargs": {"features_dim": MODEL["FEATURE_DIM"]},
+            "net_arch": [
+                dict(
+                    pi=[MODEL["HIDDEN_DIM"], MODEL["HIDDEN_DIM"], MODEL["HIDDEN_DIM"] // 2],  # Policy network
+                    vf=[MODEL["HIDDEN_DIM"], MODEL["HIDDEN_DIM"], MODEL["HIDDEN_DIM"] // 2],  # Value network
+                )
+            ],
+            "activation_fn": nn.ReLU,
+            "ortho_init": True,
+        }
 
-        # The worker network needs to take the state dimensions plus one additional channel
-        # for the selected pattern (state + 1)
-        self.worker = WorkerNetwork(
-            input_channels=env.observation_space.shape[0]
-            + 1,  # State channels + selected pattern
-            num_rotations=len(env.rotation_angles),
-            cloth_dims=cloth_dims,
-        ).to(self.device)
+        # Create model with error handling
+        try:
+            logger.info("Creating PPO model with custom CNN policy")
+            # Check environment observation and action spaces
+            logger.info(f"Environment observation space: {env.observation_space}")
+            logger.info(f"Environment action space: {env.action_space}")
 
-        # Initialize optimizers
-        self.manager_optimizer = optim.Adam(self.manager.parameters(), lr=0.001)
-        self.worker_optimizer = optim.Adam(self.worker.parameters(), lr=0.001)
+            # Create the model with improved hyperparameters
+            model = PPO(
+                "MultiInputPolicy",  # Use MultiInputPolicy for Dict observation space
+                env,
+                policy_kwargs=policy_kwargs,
+                learning_rate=TRAINING["LEARNING_RATE"],
+                n_steps=PATTERN_FITTING["MAX_STEPS"] * 40,  # Scale up for better learning
+                batch_size=TRAINING["BATCH_SIZE"],
+                n_epochs=TRAINING["DEFAULT_EPOCHS"],
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                ent_coef=0.01,
+                vf_coef=0.5,
+                max_grad_norm=0.5,
+                verbose=1,
+                tensorboard_log=ENVIRONMENT["TENSORBOARD_LOG_DIR"],
+                device=torch.device(ENVIRONMENT["DEVICE"] if torch.cuda.is_available() else "cpu"),
+            )
+            logger.info("PPO model created successfully")
+        except Exception as e:
+            logger.error(f"Error creating PPO model: {e}")
+            logger.info("Attempting to use default policy without custom CNN")
+            # Try with default policy as fallback
+            model = PPO(
+                "MultiInputPolicy",  # Use MultiInputPolicy for Dict observation space
+                env,
+                learning_rate=TRAINING["LEARNING_RATE"],
+                n_steps=PATTERN_FITTING["MAX_STEPS"] * 40,
+                batch_size=TRAINING["BATCH_SIZE"],
+                n_epochs=TRAINING["DEFAULT_EPOCHS"],
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                ent_coef=0.01,
+                vf_coef=0.5,
+                max_grad_norm=0.5,
+                verbose=1,
+                tensorboard_log=ENVIRONMENT["TENSORBOARD_LOG_DIR"],
+                device=torch.device(ENVIRONMENT["DEVICE"] if torch.cuda.is_available() else "cpu"),
+            )
 
-        # Experience buffer for batch learning
-        self.buffer = []
-        self.gamma = 0.99  # Discount factor
+        # Training callbacks
+        callbacks: Sequence[CheckpointCallback] = [
+            CheckpointCallback(
+                save_freq=10000,
+                save_path="./checkpoints/",
+                name_prefix="ppo_pattern_fitting",
+                save_replay_buffer=True,
+                save_vecnormalize=True,
+            )
+        ]
 
-    def train(self, num_episodes: int):
-        """Train both networks through reinforcement learning
+        # Train the model with error handling
+        try:
+            logger.info(f"Starting training for {actual_timesteps} timesteps")
+            # Use a larger initial training period
+            initial_timesteps = min(5000, actual_timesteps)
+            logger.info(f"Initial training for {initial_timesteps} timesteps")
+
+            model.learn(
+                total_timesteps=initial_timesteps,
+                callback=list(callbacks),
+                progress_bar=True,
+            )
+
+            # If initial training worked, continue with full training if needed
+            if initial_timesteps < actual_timesteps:
+                logger.info(
+                    f"Continuing training for remaining {actual_timesteps - initial_timesteps} timesteps"
+                )
+                model.learn(
+                    total_timesteps=actual_timesteps - initial_timesteps,
+                    callback=list(callbacks),
+                    progress_bar=True,
+                )
+
+            logger.info("Training completed successfully")
+
+            # Save the model
+            if self.model_path:
+                try:
+                    model.save(self.model_path)
+                    logger.info(f"Model saved to {self.model_path}")
+                except Exception as e:
+                    logger.error(f"Error saving model to {self.model_path}: {e}")
+
+            # Save model reference
+            self.model = cast(PPO, model)
+
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            # Create a dummy model for evaluation
+            self.model = model
+
+        # Get best state
+        try:
+            eval_env = PackingEnvironment(
+                cloth_data=processed_cloth,
+                patterns=processed_patterns,
+                rotation_angles=self.rotation_angles,
+            )
+
+            best_state, best_utilization = self._evaluate_model(model, eval_env, processed_cloth=processed_cloth)
+        except Exception as e:
+            logger.error(f"Error during evaluation: {e}")
+            # Create a default result
+            best_state = np.zeros((512, 512), dtype=np.uint8)
+            best_utilization = 0.0
+
+        return {"best_state": best_state, "best_utilization": best_utilization}
+
+    def _evaluate_model(
+        self, model: PPO, env: PackingEnvironment, n_eval_episodes: int = 5, processed_cloth: Dict = None
+    ) -> Tuple[Optional[np.ndarray], float]:
+        """Evaluate the trained model
 
         Args:
-            num_episodes: Number of training episodes
+            model: The trained model
+            env: The environment to evaluate on
+            n_eval_episodes: Number of episodes to evaluate
+            processed_cloth: The processed cloth data for fallback state creation
 
         Returns:
             Tuple of (best_state, best_utilization)
@@ -1306,1144 +931,761 @@ class HierarchicalRL:
         best_utilization = 0.0
         best_state = None
 
-        for episode in range(num_episodes):
-            state, _ = self.env.reset()  # Gymnasium API returns (state, info)
-            episode_reward = 0
-            done = False
-
-            # Move state to device and correct format
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-
-            while not done:
-                # 1. Manager selects which pattern to place next
-                sequence_probs = self.manager(state_tensor)
-                pattern_idx = self.select_pattern(
-                    sequence_probs.squeeze().cpu().detach().numpy()
-                )
-
-                if pattern_idx is None:
-                    # No more patterns to place
-                    logger.info("All patterns placed, ending episode.")
-                    done = True
-                    break
-
-                # 2. Worker selects where and at what rotation to place the pattern
-                # Create worker state by adding pattern channel
-                pattern_channel = np.zeros_like(self.env.cloth_space)
-                pattern = self.env.patterns[pattern_idx]
-
-                if "contours" in pattern and pattern["contours"]:
-                    try:
-                        # Make sure contours are properly formatted for fillPoly
-                        contours_copy = []
-                        for contour in pattern["contours"]:
-                            if contour is not None and len(contour) > 0:
-                                # Ensure contour is int32 and has correct shape
-                                contour_copy = np.array(contour, dtype=np.int32)
-                                if (
-                                    len(contour_copy.shape) == 3
-                                    and contour_copy.shape[1] == 1
-                                ):
-                                    # Reshape from (n, 1, 2) to (n, 2) if needed
-                                    contour_copy = contour_copy.reshape(
-                                        (contour_copy.shape[0], 2)
-                                    )
-                                contours_copy.append(contour_copy)
-
-                        if contours_copy:
-                            cv2.fillPoly(pattern_channel, contours_copy, 1)
-                        else:
-                            # Fallback to a simple rectangle if contours are invalid
-                            self._fallback_rectangle(pattern_channel, pattern)
-                    except Exception as e:
-                        logger.warning(f"Error filling pattern: {e}, using fallback")
-                        self._fallback_rectangle(pattern_channel, pattern)
-
-                worker_state = np.concatenate(
-                    [state, pattern_channel[np.newaxis, :, :]]
-                )
-                worker_state_tensor = (
-                    torch.FloatTensor(worker_state).unsqueeze(0).to(self.device)
-                )
-
-                placement_map, rotation_probs = self.worker(worker_state_tensor)
-
-                # 3. Select position and rotation
-                # For position, find the pixel with highest probability
-                pos_idx = torch.argmax(placement_map.view(-1)).item()
-                pos_y, pos_x = np.unravel_index(
-                    pos_idx, (self.env.cloth_height, self.env.cloth_width)
-                )
-
-                # For rotation, select the rotation angle with highest probability
-                rotation_idx = torch.argmax(rotation_probs).item()
-                rotation = self.env.rotation_angles[rotation_idx]
-
-                # 4. Take action in environment
-                action = {
-                    "pattern_idx": pattern_idx,
-                    "position": (pos_x, pos_y),
-                    "rotation": rotation,
-                }
-
-                # Gymnasium API returns 5 values
-                next_state, reward, terminated, truncated, info = self.env.step(action)
-                done = terminated or truncated
-
-                # 5. Store experience for learning
-                self.buffer.append(
-                    {
-                        "state": state,
-                        "action": action,
-                        "reward": reward,
-                        "next_state": next_state,
-                        "done": done,
-                        "sequence_probs": sequence_probs.squeeze()
-                        .cpu()
-                        .detach()
-                        .numpy(),
-                        "placement_map": placement_map.squeeze().cpu().detach().numpy(),
-                        "rotation_probs": rotation_probs.squeeze()
-                        .cpu()
-                        .detach()
-                        .numpy(),
-                    }
-                )
-
-                # 6. Update networks if buffer has enough samples
-                if len(self.buffer) >= 16:  # Batch size
-                    self._update_networks()
-                    self.buffer = []
-
-                # 7. Update state and running reward
-                state = next_state
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                episode_reward += reward
-
-                # Track best state (for visualization and final result)
-                current_utilization = info["utilization"]
-                if current_utilization > best_utilization:
-                    best_utilization = current_utilization
-                    best_state = self.env.cloth_space.copy()
-                    logger.info(f"New best utilization: {best_utilization:.4f}")
-
-            # Log episode results
-            if episode % 10 == 0 or episode == num_episodes - 1:
-                logger.info(
-                    f"Episode {episode}/{num_episodes}, "
-                    f"Reward: {episode_reward:.2f}, "
-                    f"Utilization: {info['utilization']:.4f}"
-                )
-
-        # Return best placement state achieved during training
-        return best_state, best_utilization
-
-    def _get_area_from_dimensions(self, pattern):
-        """Calculate pattern area from dimensions
-        
-        Args:
-            pattern: Dictionary with pattern data
-            
-        Returns:
-            Pattern area or 0 if dimensions not available
-        """
-        if "dimensions" in pattern:
-            width, height = pattern["dimensions"]
-            # Handle potentially different types (tensor, numpy, etc.)
-            if hasattr(width, "item"):
-                width, height = width.item(), height.item()
-            return float(width) * float(height)
-        return 0  # Default area if no size information
-    
-    def select_pattern(self, sequence_probs, epsilon=0.2):
-        """Select a pattern using advanced selection strategy
-
-        Enhanced with pattern size awareness and prioritization to improve
-        multi-pattern packing efficiency. Uses an optimized selection strategy
-        that considers:
-
-        1. Largest patterns first (greedy placement of large patterns)
-        2. Probability scores from manager network
-        3. Exploration vs. exploitation balance
-
-        This approach follows research showing that placing larger patterns first
-        often leads to better overall utilization.
-
-        Args:
-            sequence_probs: Probability distribution over patterns
-            epsilon: Exploration rate (increased to 0.2 for better exploration)
-
-        Returns:
-            Selected pattern index or None if no patterns available
-        """
-        if not self.env.available_patterns:
-            return None  # No patterns available
-
-        # Ensure we are placing multiple patterns
-        # Process all available patterns instead of just returning the first one
-        available_patterns = self.env.available_patterns.copy()
-
-        # Ensure sequence_probs is a numpy array
-        if isinstance(sequence_probs, (int, float)):
-            # If it's a scalar, convert to array
-            sequence_probs = np.array([sequence_probs])
-
-        # Pure exploration path (random selection)
-        if np.random.random() < epsilon:
-            # Explore: choose a random available pattern
-            return np.random.choice(available_patterns)
-        else:
-            # Exploitation path with size-aware prioritization
-            valid_actions = available_patterns
-            if not valid_actions:
-                return None  # No valid actions
-
-            # Special case: only one available pattern
-            if sequence_probs.ndim == 0 or (
-                len(sequence_probs) == 1 and len(valid_actions) == 1
-            ):
-                return valid_actions[0]
-
-            # Get pattern sizes
-            pattern_sizes = []
-            for pattern_idx in valid_actions:
-                pattern = self.env.patterns[pattern_idx]
-                area = 0
-
-                # Get contour area if available
-                if "contours" in pattern and pattern["contours"] and len(pattern["contours"]) > 0:
-                    try:
-                        # Ensure contour is properly formatted
-                        contour = pattern["contours"][0]
-                        if contour is not None and len(contour) >= 3:
-                            # Ensure correct shape and data type
-                            contour_np = np.array(contour, dtype=np.float32)
-                            if len(contour_np.shape) > 2 and contour_np.shape[1] == 1:
-                                contour_np = contour_np.reshape(contour_np.shape[0], contour_np.shape[2])
-                            area = cv2.contourArea(contour_np)
-                        else:
-                            # Fallback for invalid contour
-                            area = self._get_area_from_dimensions(pattern)
-                    except Exception:
-                        # Fallback to dimensions if contour area calculation fails
-                        area = self._get_area_from_dimensions(pattern)
-                else:
-                    # Use dimensions if no contours
-                    area = self._get_area_from_dimensions(pattern)
-
-                pattern_sizes.append((pattern_idx, area))
-
-            # Sort patterns by area (largest first)
-            pattern_sizes.sort(key=lambda x: x[1], reverse=True)
-
-            # Filter probabilities for valid actions
-            valid_probs = np.zeros(len(valid_actions))
-            for i, idx in enumerate(valid_actions):
-                if idx < len(sequence_probs):
-                    valid_probs[i] = sequence_probs[idx]
-
-            # Check if we have valid probabilities
-            if len(valid_probs) > 0:
-                # Blend size priority with network prediction
-                # Combine size ranking with network probabilities (70% size, 30% network)
-                combined_scores = {}
-
-                # Normalize size ranking to 0-1 range
-                size_ranks = {}
-                for i, (pattern_idx, _) in enumerate(pattern_sizes):
-                    size_ranks[pattern_idx] = 1.0 - (i / max(1, len(pattern_sizes) - 1))
-
-                # Combine scores
-                for i, pattern_idx in enumerate(valid_actions):
-                    network_score = valid_probs[i]
-                    size_score = size_ranks.get(pattern_idx, 0.0)
-
-                    # Combined score (weighted blend)
-                    combined_scores[pattern_idx] = (
-                        0.7 * size_score + 0.3 * network_score
-                    )
-
-                # Select pattern with highest combined score
-                best_action = max(combined_scores.items(), key=lambda x: x[1])[0]
-                return best_action
-            else:
-                # Fallback to largest pattern if probabilities are invalid
-                return (
-                    pattern_sizes[0][0]
-                    if pattern_sizes
-                    else np.random.choice(valid_actions)
-                )
-
-    def _update_networks(self):
-        """Update both networks using stored experiences"""
-        # Get batch of experiences
-        batch = self.buffer  # Use all experiences in buffer
-
-        # Prepare batch data
-        states = torch.FloatTensor([x["state"] for x in batch]).to(self.device)
-        rewards = torch.FloatTensor([x["reward"] for x in batch]).to(self.device)
-        actions = [x["action"] for x in batch]
-
-        # Update manager network
-        sequence_probs = self.manager(states)
-
-        # Calculate manager loss (policy gradient)
-        manager_loss = 0
-        for i, action in enumerate(actions):
-            # Use log probability of the chosen action multiplied by the reward
-            if action["pattern_idx"] < sequence_probs.shape[1]:
-                log_prob = torch.log(sequence_probs[i, action["pattern_idx"]] + 1e-10)
-                manager_loss -= log_prob * rewards[i]  # Gradient ascent
-
-        manager_loss /= len(batch)  # Normalize by batch size
-
-        self.manager_optimizer.zero_grad()
-        manager_loss.backward()
-        self.manager_optimizer.step()
-
-        # Update worker network
-        # Create worker states by adding pattern channel
-        worker_states = []
-        for x in batch:
-            state = x["state"]
-            pattern_idx = x["action"]["pattern_idx"]
-            pattern_mask = np.zeros_like(self.env.cloth_space)
-
-            if pattern_idx < len(self.env.patterns):
-                pattern = self.env.patterns[pattern_idx]
-                if "contours" in pattern and pattern["contours"]:
-                    try:
-                        # Make sure contours are properly formatted for fillPoly
-                        contours_copy = []
-                        for contour in pattern["contours"]:
-                            if contour is not None and len(contour) > 0:
-                                # Ensure contour is int32 and has correct shape
-                                contour_copy = np.array(contour, dtype=np.int32)
-                                if (
-                                    len(contour_copy.shape) == 3
-                                    and contour_copy.shape[1] == 1
-                                ):
-                                    # Reshape from (n, 1, 2) to (n, 2) if needed
-                                    contour_copy = contour_copy.reshape(
-                                        (contour_copy.shape[0], 2)
-                                    )
-                                contours_copy.append(contour_copy)
-
-                        if contours_copy:
-                            cv2.fillPoly(pattern_mask, contours_copy, 1)
-                    except Exception as e:
-                        logger.warning(
-                            f"Error filling pattern in _update_networks: {e}"
-                        )
-
-            worker_state = np.concatenate([state, pattern_mask[np.newaxis, :, :]])
-            worker_states.append(worker_state)
-
-        worker_states_tensor = torch.FloatTensor(worker_states).to(self.device)
-        placement_maps, rotation_probs = self.worker(worker_states_tensor)
-
-        # Calculate worker losses
-        # 1. Position loss
-        placement_targets = []
-        for action in actions:
-            pos_x, pos_y = action["position"]
-            target = pos_y * self.env.cloth_width + pos_x
-            placement_targets.append(target)
-
-        placement_targets_tensor = torch.LongTensor(placement_targets).to(self.device)
-
-        placement_loss = F.cross_entropy(
-            placement_maps.view(len(batch), -1), placement_targets_tensor
-        )
-
-        # 2. Rotation loss
-        rotation_targets = [
-            self.env.rotation_angles.index(x["action"]["rotation"]) for x in batch
-        ]
-        rotation_targets_tensor = torch.LongTensor(rotation_targets).to(self.device)
-
-        rotation_loss = F.cross_entropy(rotation_probs, rotation_targets_tensor)
-
-        # Combine worker losses
-        worker_loss = placement_loss + rotation_loss
-
-        self.worker_optimizer.zero_grad()
-        worker_loss.backward()
-        self.worker_optimizer.step()
-
-    def save_model(self, model_path: str):
-        """Save trained models
-
-        Args:
-            model_path: Path to save the model
-        """
-        torch.save(
-            {"manager": self.manager.state_dict(), "worker": self.worker.state_dict()},
-            model_path,
-        )
-        logger.info(f"Model saved to {model_path}")
-
-    def load_model(self, model_path: str):
-        """Load trained models
-
-        Args:
-            model_path: Path to load the model from
-        """
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Handle the manager model with the adapter layer
-        # Load state_dict with strict=False to ignore the adapter
-        self.manager.load_state_dict(checkpoint["manager"], strict=False)
-        
-        # Initialize the adapter weights to identity mapping (preserve first 4 channels)
-        with torch.no_grad():
-            # Set weights to create an identity function for first 4 channels
-            in_channels = self.manager.input_adapter.weight.size(1)
-            # For each output channel, set weights to 1.0 at the corresponding input channel
-            for i in range(min(4, in_channels)):
-                self.manager.input_adapter.weight[i, i, 0, 0] = 1.0
-        
-        # Load worker network (with adapters)
-        self.worker.load_state_dict(checkpoint["worker"], strict=False)
-        
-        # Initialize the worker adapter weights
-        with torch.no_grad():
-            # Set weights to create an identity function for first channels
-            in_channels = self.worker.input_adapter.weight.size(1)
-            # For each output channel, set weights to 1.0 at the corresponding input channel
-            for i in range(min(5, in_channels)):
-                self.worker.input_adapter.weight[i, i, 0, 0] = 1.0
-        
-        logger.info(f"Model loaded from {model_path}")
-
-    def infer(self, visualize=False):
-        """Run inference to find optimal pattern placement
-
-        Args:
-            visualize: Whether to generate visualizations
-
-        Returns:
-            Tuple of (final_state, utilization, placement_data)
-        """
-        state, _ = self.env.reset()  # Gymnasium API returns (state, info)
-        done = False
-        total_reward = 0
-
-        # Prepare for visualization if requested
-        if visualize:
-            import matplotlib.pyplot as plt
-
-            output_dir = "output"
-            os.makedirs(output_dir, exist_ok=True)
-            plt.figure(figsize=(10, 10))
-            plt.imshow(self.env.cloth_space, cmap="gray")
-            plt.title("Initial cloth")
-            plt.savefig(os.path.join(output_dir, "initial_cloth.png"))
-            plt.close()
-
-        # Ensure we try to place all patterns
-        max_attempts = len(self.env.patterns) * 3  # Allow multiple attempts per pattern
-        step = 0
-        placed_pattern_count = 0
-        # Keep trying to place patterns until we've placed all or reached max attempts
-        while not done and step < max_attempts and placed_pattern_count < len(self.env.patterns):
-            # Move state to device
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-
-            # Get pattern selection from manager
-            with torch.no_grad():
-                sequence_probs = self.manager(state_tensor)
-
-            # Select pattern with increased exploration (try multiple patterns)
-            pattern_idx = self.select_pattern(
-                sequence_probs.squeeze().cpu().numpy(), epsilon=0.25
-            )
-
-            if pattern_idx is None:
-                # No more patterns to place
-                logger.info("No more patterns available to place")
-                break
-
-            # Get placement from worker
-            pattern_channel = np.zeros_like(self.env.cloth_space)
-            pattern = self.env.patterns[pattern_idx]
-
-            if "contours" in pattern and pattern["contours"]:
+        # Limit the number of episodes for quick debugging
+        n_eval_episodes = min(2, n_eval_episodes)
+
+        try:
+            for _i in range(n_eval_episodes):
                 try:
-                    # Make sure contours are properly formatted for fillPoly
-                    contours_copy = []
-                    for contour in pattern["contours"]:
-                        if contour is not None and len(contour) > 0:
-                            # Ensure contour is int32 and has correct shape
-                            contour_copy = np.array(contour, dtype=np.int32)
-                            if (
-                                len(contour_copy.shape) == 3
-                                and contour_copy.shape[1] == 1
-                            ):
-                                # Reshape from (n, 1, 2) to (n, 2) if needed
-                                contour_copy = contour_copy.reshape(
-                                    (contour_copy.shape[0], 2)
-                                )
-                            contours_copy.append(contour_copy)
+                    # Manually set up environment attributes before reset
+                    if not hasattr(env, 'cloth_width') and hasattr(env, 'cloth_data'):
+                        env.cloth_width = int(env.cloth_data.get('width', 512))
+                        env.cloth_height = int(env.cloth_data.get('height', 512))
+                        
+                    obs, _ = env.reset()
+                    done = False
+                    step_count = 0
+                    max_steps = PATTERN_FITTING["MAX_STEPS"]  # Use config value
 
-                    if contours_copy:
-                        cv2.fillPoly(pattern_channel, contours_copy, 1)
-                    else:
-                        # If no valid contours, use fallback
-                        self._fallback_rectangle(pattern_channel, pattern)
-                except Exception as e:
-                    logger.warning(f"Error filling pattern: {e}, using fallback")
-                    self._fallback_rectangle(pattern_channel, pattern)
-
-            worker_state = np.concatenate([state, pattern_channel[np.newaxis, :, :]])
-            worker_state_tensor = (
-                torch.FloatTensor(worker_state).unsqueeze(0).to(self.device)
-            )
-
-            # Get multiple placement positions to try (top k)
-            with torch.no_grad():
-                placement_map, rotation_probs = self.worker(worker_state_tensor)
-                # Get more positions to try (increased from 3 to 8)
-                k = 8
-                top_k_positions = []
-                flattened_map = placement_map.view(-1)
-                
-                # Add cloth center as a potential position (often a good place to start)
-                center_x, center_y = self.env.cloth_width // 2, self.env.cloth_height // 2
-                
-                # Try to add some positions from the actual cloth area if we have a mask
-                if hasattr(self.env, 'cloth_data') and 'cloth_mask' in self.env.cloth_data and self.env.cloth_data['cloth_mask'] is not None:
-                    try:
-                        cloth_mask = self.env.cloth_data['cloth_mask']
-                        if np.sum(cloth_mask) > 0:
-                            # Find non-zero points in the mask (these are on the cloth)
-                            cloth_points = np.argwhere(cloth_mask > 0)
-                            if len(cloth_points) > 0:
-                                # Sample a few points from the cloth
-                                sampled_indices = np.random.choice(len(cloth_points), min(3, len(cloth_points)), replace=False)
-                                for idx in sampled_indices:
-                                    y, x = cloth_points[idx]
-                                    # Scale to match current dimensions
-                                    scale_y = self.env.cloth_height / cloth_mask.shape[0]
-                                    scale_x = self.env.cloth_width / cloth_mask.shape[1]
-                                    pos_y = int(y * scale_y)
-                                    pos_x = int(x * scale_x)
-                                    top_k_positions.append((pos_x, pos_y))
-                    except Exception as e:
-                        logger.warning(f"Error sampling positions from cloth mask: {e}")
-                
-                # Add the center point if it's not already in our positions
-                if not any(pos[0] == center_x and pos[1] == center_y for pos in top_k_positions):
-                    top_k_positions.append((center_x, center_y))
-                
-                # Get remaining positions from the placement map
-                top_k_values, top_k_indices = torch.topk(flattened_map, k=min(k, flattened_map.numel()))
-                for idx in top_k_indices:
-                    pos_y, pos_x = np.unravel_index(
-                        idx.item(), (self.env.cloth_height, self.env.cloth_width)
-                    )
-                    top_k_positions.append((pos_x, pos_y))
-                # Get top rotation options
-                top_k_rotations = []
-                top_rot_values, top_rot_indices = torch.topk(rotation_probs.squeeze(), k=min(2, rotation_probs.size(1)))
-                for idx in top_rot_indices:
-                    top_k_rotations.append(self.env.rotation_angles[idx.item()])
-
-            # Try different positions and rotations until one works
-            placement_success = False
-            for position in top_k_positions:
-                for rotation in top_k_rotations:
-                    # Take action
-                    action = {
-                        "pattern_idx": pattern_idx,
-                        "position": position,
-                        "rotation": rotation,
-                    }
-
-                    # Gymnasium API returns 5 values
-                    next_state, reward, terminated, truncated, info = self.env.step(action)
-                    if info.get("success", False):
-                        placement_success = True
-                        placed_pattern_count += 1
-                        total_reward += reward
-                        # Visualize step if requested
-                        if visualize:
-                            plt.figure(figsize=(10, 10))
-                            plt.imshow(self.env.cloth_space, cmap="gray")
-                            plt.title(f"Step {step}: Pattern {pattern_idx} placed")
-                            plt.savefig(os.path.join(output_dir, f"step_{step}_cloth.png"))
-                            plt.close()
-                        # Log progress
-                        logger.info(
-                            f"Step {step}: Placed pattern {pattern_idx} at {position} with rotation {rotation}°"
-                        )
-                        logger.info(f"Current utilization: {info['utilization']:.4f}")
-                        state = next_state
-                        break
-                if placement_success:
-                    break
-            if not placement_success:
-                logger.warning(f"Failed to place pattern {pattern_idx} after trying multiple positions")
-            # Check if episode is done
-            done = terminated or truncated or placed_pattern_count >= len(self.env.patterns)
-            step += 1
-
-        # Final visualization
-        if visualize:
-            plt.figure(figsize=(10, 10))
-            plt.imshow(self.env.cloth_space, cmap="gray")
-            plt.title(f"Final placement: Utilization {self.env._calculate_utilization():.4f}")
-            plt.savefig(os.path.join(output_dir, "final_cloth.png"))
-            plt.close()
-
-        # Get final utilization
-        final_utilization = self.env._calculate_utilization()
-        logger.info(
-            f"Inference complete: Utilization {final_utilization:.4f}, Placed {placed_pattern_count}/{len(self.env.patterns)} patterns, Reward {total_reward:.2f}"
-        )
-        return self.env.cloth_space, final_utilization, self.env.placed_patterns
-
-
-class PatternFittingModule:
-    """Module for fitting patterns onto cloth using Hierarchical RL
-
-    This module provides the main interface for using Hierarchical RL
-    to optimize pattern placement on cloth materials.
-    """
-
-    def __init__(self, model_path: Optional[str] = None):
-        """Initialize pattern fitting module
-
-        Args:
-            model_path: Path to load a pretrained model (optional)
-        """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model_path = model_path
-        self.rl_agent = None
-        self.rotation_angles = [
-            0,
-            45,
-            90,
-            135,
-            180,
-            225,
-            270,
-            315,
-        ]  # Possible rotation angles
-
-        logger.info(f"Pattern Fitting Module initialized on device: {self.device}")
-
-    def prepare_data(
-        self, cloth_data: Dict, patterns_data: List[Dict]
-    ) -> Tuple[Dict, List[Dict]]:
-        """Prepare cloth and patterns data for packing environment
-
-        Enhanced to use cloth and pattern masks for better fitting.
-
-        Args:
-            cloth_data: Dictionary containing cloth properties
-            patterns_data: List of dictionaries containing pattern properties
-
-        Returns:
-            Processed cloth and patterns data
-        """
-        # Process cloth data - ensure dimensions are reasonable
-        processed_cloth = cloth_data.copy()
-
-        # Check if we have a cloth mask to use (from the improved cloth recognition)
-        cloth_mask = processed_cloth.get("cloth_mask", None)
-
-        # If we have a cloth mask, use it to get better contours
-        if cloth_mask is not None and np.sum(cloth_mask) > 0:
-            try:
-                # Find contours in the mask
-                contours, _ = cv2.findContours(
-                    cloth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-
-                # If we found significant contours, use them
-                if contours and len(contours) > 0:
-                    # Find the largest contour
-                    largest_contour = max(contours, key=cv2.contourArea)
-                    if cv2.contourArea(largest_contour) > 500:  # Reasonable size
-                        processed_cloth["contours"] = [largest_contour]
-
-                        # Update dimensions from mask contour
-                        x, y, w, h = cv2.boundingRect(largest_contour)
-                        dimensions = np.array([w, h], dtype=np.float32)
-                        if w > 10 and h > 10:  # Reasonable size check
-                            processed_cloth["dimensions"] = dimensions
-                            logger.info(
-                                f"Using cloth dimensions from mask: {dimensions}"
-                            )
-            except Exception as e:
-                logger.warning(f"Error processing cloth mask: {e}")
-
-        # Fix cloth dimensions if they're negative or too small
-        dimensions = processed_cloth.get("dimensions", None)
-        if dimensions is None or np.any(np.array(dimensions) < 10):
-            # Try to get dimensions from contours
-            if "contours" in processed_cloth and processed_cloth["contours"]:
-                # Use contour bounds
-                contour = processed_cloth["contours"][0]
-                x, y, w, h = cv2.boundingRect(contour)
-                dimensions = np.array([w, h], dtype=np.float32)
-
-            # Use image dimensions if available
-            if "image_path" in processed_cloth:
-                try:
-                    image = cv2.imread(processed_cloth["image_path"])
-                    if image is not None:
-                        h, w = image.shape[:2]
-                        dimensions = np.array([w, h], dtype=np.float32)
-                except Exception:
-                    pass
-
-            # If all else fails, use default dimensions
-            if dimensions is None or np.any(np.array(dimensions) < 10):
-                dimensions = np.array([512.0, 512.0], dtype=np.float32)
-
-            processed_cloth["dimensions"] = dimensions
-            logger.info(f"Using cloth dimensions: {dimensions}")
-
-        # Make sure dimensions are positive
-        cloth_dims = np.abs(np.array(processed_cloth["dimensions"], dtype=np.float32))
-        processed_cloth["dimensions"] = tuple(cloth_dims)
-
-        # Scale cloth dimensions if needed (for very large cloth)
-        cloth_width, cloth_height = cloth_dims
-        max_size = 512  # Maximum size for either dimension
-
-        if cloth_width > max_size or cloth_height > max_size:
-            scale = max_size / max(cloth_width, cloth_height)
-            processed_cloth["dimensions"] = (cloth_width * scale, cloth_height * scale)
-            logger.info(
-                f"Scaled cloth from {(cloth_width, cloth_height)} to {processed_cloth['dimensions']}"
-            )
-
-            # Also scale the contours if they exist
-            if "contours" in processed_cloth and processed_cloth["contours"]:
-                try:
-                    for i, contour in enumerate(processed_cloth["contours"]):
-                        processed_cloth["contours"][i] = contour * scale
-                except Exception as e:
-                    logger.warning(f"Error scaling contours: {e}")
-
-        # Process patterns data
-        processed_patterns = []
-        for pattern in patterns_data:
-            try:
-                # Create a copy of the pattern data
-                processed_pattern = pattern.copy()
-
-                # Ensure pattern has contours - use enhanced contours if available
-                if (
-                    "contours" not in processed_pattern
-                    or not processed_pattern["contours"]
-                    or len(processed_pattern["contours"]) == 0
-                ):
-                    # Try to generate contours from dimensions if available
-                    if "dimensions" in processed_pattern:
-                        # Create a rectangle contour from dimensions
-                        dims = processed_pattern["dimensions"]
-                        if hasattr(dims, "tolist"):  # Handle torch tensors
-                            dims = dims.tolist()
-                        width, height = map(float, dims)
-
-                        # Ensure minimum size
-                        width, height = max(5.0, width), max(5.0, height)
-
-                        # Create rectangle contour
-                        rect = np.array(
-                            [[[0, 0]], [[width, 0]], [[width, height]], [[0, height]]],
-                            dtype=np.float32,
-                        )
-
-                        processed_pattern["contours"] = [rect]
-                    else:
-                        # Skip pattern with no contours and no dimensions
-                        logger.warning(
-                            "Pattern missing both contours and dimensions, skipping"
-                        )
-                        continue
-                else:
-                    # Filter contours to ensure they're valid
-                    valid_contours = []
-                    for contour in processed_pattern["contours"]:
-                        # Check if contour has enough points and reasonable area
-                        if len(contour) >= 3 and cv2.contourArea(contour) > 100:
-                            valid_contours.append(contour)
-
-                    # If we have multiple valid contours, use the largest one as the main pattern
-                    if valid_contours:
-                        if len(valid_contours) > 1:
-                            main_contour = max(valid_contours, key=cv2.contourArea)
-                            processed_pattern["contours"] = [main_contour]
-                        else:
-                            processed_pattern["contours"] = valid_contours
-
-                        # Update dimensions from contour if needed
-                        contour = processed_pattern["contours"][0]
-                        x, y, w, h = cv2.boundingRect(contour)
-                        if w > 5 and h > 5:  # Reasonable size check
-                            processed_pattern["dimensions"] = np.array(
-                                [w, h], dtype=np.float32
-                            )
-                    else:
-                        # Handle case where no valid contours were found
-                        if "dimensions" in processed_pattern:
-                            # Create a rectangle contour from dimensions
-                            dims = processed_pattern["dimensions"]
-                            if hasattr(dims, "tolist"):  # Handle torch tensors
-                                dims = dims.tolist()
-                            width, height = map(float, dims)
-
-                            # Ensure minimum size
-                            width, height = max(5.0, width), max(5.0, height)
-
-                            # Create rectangle contour
-                            rect = np.array(
-                                [
-                                    [[0, 0]],
-                                    [[width, 0]],
-                                    [[width, height]],
-                                    [[0, height]],
-                                ],
-                                dtype=np.float32,
-                            )
-
-                            processed_pattern["contours"] = [rect]
-                        else:
-                            # Skip pattern with no valid geometry data
-                            logger.warning(
-                                "Pattern has no valid contours or dimensions, skipping"
-                            )
-                            continue
-
-                # Apply same scale to patterns if cloth was scaled
-                if cloth_width > max_size or cloth_height > max_size:
-                    try:
-                        for i, contour in enumerate(processed_pattern["contours"]):
-                            processed_pattern["contours"][i] = contour * scale
-                    except Exception as e:
-                        logger.warning(f"Error scaling pattern contours: {e}")
-
-                    # Scale dimensions if they exist
-                    if "dimensions" in processed_pattern:
+                    while not done and step_count < max_steps:
                         try:
-                            dims = processed_pattern["dimensions"]
-                            if hasattr(dims, "tolist"):  # Handle torch tensors
-                                dims = dims.tolist()
-                            processed_pattern["dimensions"] = tuple(
-                                d * scale for d in dims
-                            )
+                            # For prediction errors
+                            action, _ = model.predict(obs, deterministic=True)
+                            obs, _, terminated, truncated, info = env.step(action)
+                            done = terminated or truncated
+                            step_count += 1
+
+                            # Keep track of best state
+                            utilization = info["utilization"]
+                            if utilization > best_utilization:
+                                best_utilization = utilization
+                                best_state = (
+                                    env.cloth_state.copy()
+                                    if env.cloth_state is not None
+                                    else None
+                                )
+
                         except Exception as e:
-                            logger.warning(f"Error scaling pattern dimensions: {e}")
+                            logger.error(f"Error during model prediction or step: {e}")
+                            break
 
-                processed_patterns.append(processed_pattern)
+                except Exception as e:
+                    logger.error(f"Error during episode reset: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error during model evaluation: {e}")
+
+        # Ensure we have some result
+        if best_state is None:
+            # Create a default best state
+            try:
+                # Try to get dimensions from environment first
+                if hasattr(env, 'cloth_width') and hasattr(env, 'cloth_height'):
+                    cloth_width, cloth_height = env.cloth_width, env.cloth_height
+                # Then try from processed_cloth if provided
+                elif processed_cloth is not None:
+                    cloth_width = processed_cloth.get('width', 512)
+                    cloth_height = processed_cloth.get('height', 512)
+                # Default as last resort
+                else:
+                    cloth_width, cloth_height = 512, 512
+                
+                # Create array with correct dimensions and ensure they're integers
+                best_state = np.zeros((int(cloth_height), int(cloth_width)), dtype=np.uint8)
             except Exception as e:
-                logger.warning(f"Error processing pattern: {e}")
+                logger.error(f"Error creating default state: {e}")
+                best_state = np.zeros((512, 512), dtype=np.uint8)
 
-        logger.info(f"Prepared {len(processed_patterns)} patterns for fitting")
-        return processed_cloth, processed_patterns
-
-    def train(
-        self, cloth_data: Dict, patterns_data: List[Dict], num_episodes: int = 100
-    ) -> Dict:
-        """Train the pattern fitting model
-
-        Args:
-            cloth_data: Dictionary containing cloth properties
-            patterns_data: List of dictionaries containing pattern properties
-            num_episodes: Number of training episodes
-
-        Returns:
-            Dictionary with training results
-        """
-        # Prepare data for environment
-        processed_cloth, processed_patterns = self.prepare_data(
-            cloth_data, patterns_data
-        )
-
-        # Create packing environment
-        env = PackingEnvironment(
-            cloth_data=processed_cloth,
-            patterns=processed_patterns,
-            rotation_angles=self.rotation_angles,
-        )
-
-        # Create RL agent
-        self.rl_agent = HierarchicalRL(env, self.device)
-
-        # Train the agent
-        logger.info(f"Starting training for {num_episodes} episodes")
-        best_state, best_utilization = self.rl_agent.train(num_episodes)
-
-        # Save the trained model if path is specified
-        if self.model_path:
-            self.rl_agent.save_model(self.model_path)
-
-        return {
-            "best_state": best_state,
-            "best_utilization": best_utilization,
-            "training_episodes": num_episodes,
-        }
+        return best_state, best_utilization
 
     def fit_patterns(
         self, cloth_data: Dict, patterns_data: List[Dict], visualize: bool = False
     ) -> Dict:
-        """Fit patterns onto cloth using trained model
+        """Fit patterns onto cloth
 
         Args:
-            cloth_data: Dictionary containing cloth properties
-            patterns_data: List of dictionaries containing pattern properties
-            visualize: Whether to generate visualization images
+            cloth_data: Dictionary with cloth properties
+            patterns_data: List of pattern dictionaries
+            visualize: Whether to enable visualization (not used currently)
 
         Returns:
             Dictionary with fitting results
         """
-        # Prepare data for environment
+        # Prepare data
         processed_cloth, processed_patterns = self.prepare_data(
             cloth_data, patterns_data
         )
 
-        # Create packing environment
+        # Create environment
         env = PackingEnvironment(
             cloth_data=processed_cloth,
             patterns=processed_patterns,
             rotation_angles=self.rotation_angles,
         )
-        
-        # Store original cloth data in environment for reference in pattern placement
-        env.cloth_data = cloth_data
 
-        # Create or load RL agent
-        if self.rl_agent is None:
-            self.rl_agent = HierarchicalRL(env, self.device)
-
-            # Load pretrained model if available
-            if self.model_path and os.path.exists(self.model_path):
-                self.rl_agent.load_model(self.model_path)
-                logger.info(f"Loaded trained model from {self.model_path}")
-            else:
-                # Train briefly if no model is available
-                logger.warning(
-                    "No pretrained model available, training for 20 episodes"
-                )
-                self.rl_agent.train(20)
-
-        # Run inference to get optimal pattern placement
-        final_state, utilization, placement_data = self.rl_agent.infer(visualize)
-
-        # Convert placement data to more user-friendly format
-        placements = []
-        for placement in placement_data:
-            placements.append(
-                {
-                    "pattern_id": placement["pattern_idx"],
-                    "position": placement["position"],
-                    "rotation": placement["rotation"],
-                }
-            )
-
-        return {
-            "final_state": final_state,  # The cloth space with patterns placed
-            "utilization": utilization,  # Material utilization percentage
-            "placements": placements,  # Details of each pattern placement
-            "cloth_dims": (env.cloth_width, env.cloth_height),
-            "patterns": processed_patterns,
-            "method": "hierarchical_rl",
-        }
-
-    def visualize_result(self, result: Dict, cloth_image=None, save_path: str = None):
-        """Visualize pattern fitting result with improved overlay on cloth image
-
-        Args:
-            result: Result dictionary from fit_patterns
-            cloth_image: Original cloth image (optional)
-            save_path: Path to save visualization (optional)
-        """
-        import matplotlib.patches as patches
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import ListedColormap
-
-        # Create figure
-        plt.figure(figsize=(16, 10))
-
-        # Create colormap for different patterns - distinct colors for each pattern
-        colors = [
-            "red",
-            "blue", 
-            "green",
-            "purple",
-            "orange",
-            "cyan",
-            "magenta",
-            "yellow",
-            "pink",
-            "lime",
-        ]
-        
-        # Create a visualization canvas
-        canvas = result.get("final_state", np.zeros((400, 400), dtype=int))
-        cloth_width, cloth_height = result.get(
-            "cloth_dims", (canvas.shape[1], canvas.shape[0])
-        )
-
-        # Plot the original cloth 
-        plt.subplot(1, 2, 1)
-        if cloth_image is not None:
-            plt.imshow(cloth_image)
-        else:
-            # Create a blank canvas colored to represent cloth
-            plt.imshow(np.ones((cloth_height, cloth_width, 3)) * 0.8)  # Light gray
-            
-        plt.title("Original Cloth")
-        plt.axis("off")
-
-        # Create overlay visualization
-        plt.subplot(1, 2, 2)
-        
-        # Start with a copy of the cloth image or a blank canvas
-        if cloth_image is not None:
-            overlay_img = cloth_image.copy()
-            # Ensure it's RGB for coloring
-            if len(overlay_img.shape) == 2:
-                overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_GRAY2RGB)
-        else:
-            overlay_img = np.ones((cloth_height, cloth_width, 3)) * 0.8  # Light gray background
-            
-        # Create a mask for each pattern and apply colors
-        colored_canvas = np.zeros((cloth_height, cloth_width, 3), dtype=np.float32)
-        
-        # Get binary mask from final state
-        binary_mask = (canvas > 0).astype(np.uint8)
-        
-        # Create pattern masks
-        for i, placement in enumerate(result["placements"]):
-            pattern_idx = placement["pattern_id"]
-            pos_x, pos_y = placement["position"]
-            rotation = placement["rotation"]
-            
-            # Find pattern shape
-            pattern_mask = np.zeros((cloth_height, cloth_width), dtype=np.uint8)
-            
-            # Try to get the pattern contours for visualization
+        # Load model if available
+        loaded_model = False
+        if self.model_path and os.path.exists(self.model_path):
             try:
-                # Get the corresponding pattern data
-                if pattern_idx < len(result.get("patterns", [])):
-                    pattern = result["patterns"][pattern_idx]
-                    
-                    # If we have contours, use them
-                    if "contours" in pattern and pattern["contours"]:
-                        # Create a mask for this pattern
-                        contours = pattern["contours"]
-                        # Rotate and translate contours
-                        transformed_contours = []
-                        for contour in contours:
-                            # Convert to numpy array if needed
-                            contour_np = np.array(contour)
-                            # Handle reshape if needed
-                            if len(contour_np.shape) == 3 and contour_np.shape[1] == 1:
-                                contour_np = contour_np.reshape(contour_np.shape[0], contour_np.shape[2])
-                                
-                            # Rotate contour
-                            center = np.mean(contour_np, axis=0)
-                            angle_rad = np.radians(rotation)
-                            rot_mat = np.array([
-                                [np.cos(angle_rad), -np.sin(angle_rad)],
-                                [np.sin(angle_rad), np.cos(angle_rad)]
-                            ])
-                            rotated_contour = np.dot(contour_np - center, rot_mat.T) + center
-                            
-                            # Translate contour to position
-                            translated_contour = rotated_contour + np.array([pos_x, pos_y])
-                            
-                            # Convert back to int32 for drawing
-                            translated_contour = translated_contour.astype(np.int32)
-                            transformed_contours.append(translated_contour)
-                        
-                        # Fill the contour in the pattern mask
-                        cv2.fillPoly(pattern_mask, transformed_contours, 1)
-                    else:
-                        # Use dimensions to create a rectangle
-                        if "dimensions" in pattern:
-                            width, height = pattern["dimensions"]
-                            if hasattr(width, "item"):
-                                width, height = width.item(), height.item()
-                            
-                            # Create rectangle points
-                            rect = np.array([
-                                [0, 0],
-                                [width, 0],
-                                [width, height],
-                                [0, height]
-                            ]).astype(np.float32)
-                            
-                            # Rotate rectangle
-                            center = np.array([width/2, height/2])
-                            angle_rad = np.radians(rotation)
-                            rot_mat = np.array([
-                                [np.cos(angle_rad), -np.sin(angle_rad)],
-                                [np.sin(angle_rad), np.cos(angle_rad)]
-                            ])
-                            rotated_rect = np.dot(rect - center, rot_mat.T) + center
-                            
-                            # Translate rectangle to position
-                            translated_rect = rotated_rect + np.array([pos_x, pos_y])
-                            
-                            # Convert to int32 for drawing
-                            translated_rect = translated_rect.astype(np.int32)
-                            
-                            # Fill the rectangle in the pattern mask
-                            cv2.fillPoly(pattern_mask, [translated_rect], 1)
+                self.model = PPO.load(self.model_path)
+                logger.info(f"Loaded model from {self.model_path}")
+                loaded_model = True
             except Exception as e:
-                logger.warning(f"Error creating pattern visualization: {e}")
-                # Extract pattern from final state as fallback
-                pattern_indices = (canvas == i+1)
-                pattern_mask[pattern_indices] = 1
-            
-            # Apply color to this pattern
-            color_rgb = plt.cm.colors.to_rgb(colors[i % len(colors)])
-            for c in range(3):
-                colored_canvas[:,:,c] += pattern_mask * color_rgb[c]
-        
-        # Blend the colored patterns with the cloth image
-        alpha = 0.6  # Transparency of patterns
-        for y in range(cloth_height):
-            for x in range(cloth_width):
-                if np.any(colored_canvas[y,x] > 0):  # If any pattern exists here
-                    # Blend the pattern color with background
-                    overlay_img[y,x] = overlay_img[y,x] * (1-alpha) + colored_canvas[y,x] * alpha * 255
-        
-        # Display the final result
-        plt.imshow(overlay_img.astype(np.uint8))
-        plt.title(f"Pattern Placement (Utilization: {result['utilization']:.1%})")
-        plt.axis("off")
-
-        # Add a legend for each pattern
-        handles = []
-        for i, placement in enumerate(result["placements"]):
-            pattern_idx = placement["pattern_id"]
-            handles.append(
-                patches.Patch(
-                    color=colors[i % len(colors)], label=f"Pattern {pattern_idx}"
+                logger.error(f"Error loading model: {e}")
+                logger.info("Failed to load model, will create a new one")
+                
+        if not loaded_model:
+            try:
+                # Create a simple model manually instead of full training
+                logger.warning("Creating a simple model for pattern fitting")
+                
+                # Create a policy
+                policy_kwargs = {
+                    "net_arch": [
+                        dict(
+                            pi=[64, 64],  # Simple policy network
+                            vf=[64, 64],  # Simple value network
+                        )
+                    ],
+                }
+                
+                # Create model
+                self.model = PPO(
+                    "MultiInputPolicy",
+                    env,
+                    policy_kwargs=policy_kwargs,
+                    learning_rate=TRAINING["LEARNING_RATE"],
+                    n_steps=128,
+                    batch_size=64,
+                    n_epochs=5,
+                    gamma=0.99,
+                    device=torch.device("cpu"),
                 )
+                
+                # Learn a tiny bit (just a few steps)
+                self.model.learn(total_timesteps=100)
+                logger.info("Created a simple model for pattern fitting")
+            except Exception as e:
+                logger.error(f"Error creating simple model: {e}")
+                logger.warning("Will proceed with manual pattern placement")
+
+        # Run inference with fallback
+        try:
+            logger.info("Running pattern fitting inference")
+            obs, _ = env.reset()
+            done = False
+
+            # Track best state
+            best_utilization = 0.0
+            best_state = None
+
+            # Limit steps to avoid infinite loops
+            max_steps = PATTERN_FITTING["MAX_INFERENCE_STEPS"]
+            step = 0
+            attempts_without_success = 0
+            max_failures = PATTERN_FITTING["MAX_FAILURES_BEFORE_MANUAL"]
+
+            while not done and step < max_steps:
+                try:
+                    # Ensure environment has required attributes
+                    if not hasattr(env, 'cloth_width') and hasattr(env, 'cloth_data'):
+                        env.cloth_width = int(env.cloth_data.get('width', 512))
+                        env.cloth_height = int(env.cloth_data.get('height', 512))
+                        
+                    # Get action from model
+                    action, _ = cast(PPO, self.model).predict(obs, deterministic=True)
+
+                    # Take step in environment
+                    obs, _, terminated, truncated, info = env.step(action)
+
+                    # Track best state with default values if needed
+                    utilization = info.get("utilization", 0.0)
+
+                    # Check if placement was successful
+                    if info.get("success", False):
+                        attempts_without_success = 0
+                    else:
+                        attempts_without_success += 1
+
+                    # Manual intervention if too many failures
+                    if attempts_without_success >= max_failures:
+                        logger.warning(
+                            f"Too many failed attempts ({attempts_without_success}), trying manual placement"
+                        )
+
+                        # Try placing each pattern
+                        for pattern_idx in env.available_patterns:
+                            # Get the pattern data
+                            if pattern_idx >= len(
+                                env.pattern_idx_map
+                            ) or env.pattern_idx_map[pattern_idx] >= len(env.patterns):
+                                continue  # Skip invalid patterns
+
+                            pattern = env.patterns[env.pattern_idx_map[pattern_idx]]
+
+                            # Calculate pattern size to avoid overlaps and boundary issues
+                            pattern_width, pattern_height = (
+                                IMAGE_PROCESSING["DEFAULT_PATTERN_WIDTH"],
+                                IMAGE_PROCESSING["DEFAULT_PATTERN_HEIGHT"],
+                            )
+                            if "dimensions" in pattern:
+                                try:
+                                    dims = pattern["dimensions"]
+                                    if hasattr(dims, "tolist"):
+                                        dims = dims.tolist()
+                                    pattern_width, pattern_height = map(float, dims)
+
+                                    # Scale if values are too small (normalized)
+                                    if pattern_width < 1.0 and pattern_height < 1.0:
+                                        # Use larger scale factor for better cloth utilization
+                                        pattern_width *= env.cloth_width * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                        pattern_height *= env.cloth_height * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                        
+                                        # Make patterns at least MIN_PATTERN_WIDTH_RATIO of cloth dimensions for visibility
+                                        min_width = env.cloth_width * PATTERN_FITTING["MIN_PATTERN_WIDTH_RATIO"]
+                                        min_height = env.cloth_height * PATTERN_FITTING["MIN_PATTERN_HEIGHT_RATIO"]
+                                        pattern_width = max(pattern_width, min_width)
+                                        pattern_height = max(pattern_height, min_height)
+                                except Exception:
+                                    logger.warning(
+                                        "Failed to get pattern dimensions, using defaults"
+                                    )
+
+                            # Create a grid of positions to try
+                            grid_size = PATTERN_FITTING["GRID_SIZE"]
+
+                            # Define a grid of positions that stays well within cloth boundaries
+                            min_x = pattern_width * PATTERN_FITTING["PATTERN_MARGIN_X"]
+                            max_x = env.cloth_width - pattern_width * PATTERN_FITTING["PATTERN_MARGIN_X"]
+                            min_y = pattern_height * PATTERN_FITTING["PATTERN_MARGIN_Y"]
+                            max_y = env.cloth_height - pattern_height * PATTERN_FITTING["PATTERN_MARGIN_Y"]
+
+                            # Ensure we have valid bounds
+                            if min_x >= max_x or min_y >= max_y:
+                                min_x, min_y = 0, 0
+                                max_x = env.cloth_width * PATTERN_FITTING["CLOTH_BOUNDARY_MARGIN"]
+                                max_y = env.cloth_height * PATTERN_FITTING["CLOTH_BOUNDARY_MARGIN"]
+
+                            # Generate positions across the cloth
+                            positions = []
+                            for i in range(grid_size):
+                                for j in range(grid_size):
+                                    # Create a staggered grid
+                                    x = min_x + (max_x - min_x) * (i / grid_size)
+                                    y = min_y + (max_y - min_y) * (j / grid_size)
+                                    positions.append((int(x), int(y)))
+
+                            # Shuffle positions for variety
+                            import random
+                            random.shuffle(positions)
+
+                            # Only try the first N positions to avoid excessive computation
+                            positions = positions[:PATTERN_FITTING["MAX_POSITIONS_TO_TRY"]]
+
+                            # Add the center position as a priority
+                            center_x = env.cloth_width // 2 - pattern_width // 2
+                            center_y = env.cloth_height // 2 - pattern_height // 2
+                            positions.insert(0, (int(center_x), int(center_y)))
+
+                            # If no positions from cloth mask or very few, add spiral positions
+                            if len(positions) < 20:
+                                # Start from center of cloth
+                                positions.append((center_x, center_y))
+                                
+                                # Add positions in increasing distance from center
+                                for radius in range(max_radius // 10, max_radius, max_radius // 10):
+                                    for angle in range(0, 360, PATTERN_FITTING["SPIRAL_ANGLE_STEP"]):  # Try positions every N degrees
+                                        x = center_x + int(radius * np.cos(np.radians(angle)))
+                                        y = center_y + int(radius * np.sin(np.radians(angle)))
+                                        positions.append((x, y))
+
+                            # Try all positions with different rotations
+                            for rot in PATTERN_FITTING["ROTATION_ANGLES"]:
+                                for pos in positions[:PATTERN_FITTING["MAX_POSITIONS_TO_TRY"]]:
+                                    if env._place_pattern(
+                                        pattern, pos[0], pos[1], rot, pattern_idx
+                                    ):
+                                        env._track_placed_pattern(
+                                            pattern, pos, rot, pattern_idx
+                                        )
+                                        logger.info(
+                                            f"Manually placed pattern {pattern_idx} at {pos} with rotation {rot}"
+                                        )
+                                        placed = True
+                                        attempts_without_success = 0
+                                        break
+
+                                if placed:
+                                    break
+
+                            if placed:
+                                # Update observation
+                                obs = env._get_observation()
+                                break
+
+                        # Reset counter even if no placement was successful
+                        attempts_without_success = 0
+
+                    if utilization > best_utilization:
+                        best_utilization = utilization
+                        best_state = (
+                            env.cloth_state.copy()
+                            if env.cloth_state is not None
+                            else None
+                        )
+
+                    # Check if done
+                    done = terminated or truncated
+                    step += 1
+
+                    logger.info(
+                        f"Step {step}: Utilization {utilization:.4f}, Success: {info['success']}"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error during inference step {step}: {e}")
+                    step += 1
+                    continue
+
+            # Format results
+            placements = []
+            if hasattr(env, 'placed_patterns'):
+                for placement in env.placed_patterns:
+                    placements.append(
+                        {
+                            "pattern_id": placement.get("pattern_idx", 0),
+                            "x": placement.get("x", 0),
+                            "y": placement.get("y", 0),
+                            "rotation": placement.get("rotation", 0),
+                        }
+                    )
+
+            # If no placements were made, try advanced manual placement
+            if not placements:
+                logger.warning(
+                    "No patterns were placed. Trying advanced manual placement."
+                )
+                
+                # Initialize info dictionary with success field
+                info = {"success": False}
+
+                # Direct manual pattern placement instead of using environment
+                # Create simple pattern placements
+                cloth_width = int(processed_cloth.get('width', 512))
+                cloth_height = int(processed_cloth.get('height', 512))
+                best_state = np.zeros((cloth_height, cloth_width), dtype=np.uint8)
+                
+                # Place pattern pieces as simple rectangles
+                pattern_margin = 20  # Space between patterns
+                current_x, current_y = 50, 50  # Starting position
+
+                # Place patterns one by one with optimal spacing
+                # Track placed patterns in the environment
+
+                # First, sort patterns by area (largest first)
+                sorted_patterns = []
+                for idx, pattern in enumerate(processed_patterns):
+                    # Calculate pattern size
+                    pattern_width, pattern_height = 50, 50  # Default
+                    if "dimensions" in pattern:
+                        try:
+                            dims = pattern["dimensions"]
+                            if hasattr(dims, "tolist"):
+                                dims = dims.tolist()
+                            pattern_width, pattern_height = map(float, dims)
+
+                            # Scale if values are too small (normalized)
+                            if pattern_width < 1.0 and pattern_height < 1.0:
+                                pattern_width *= cloth_width * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                pattern_height *= cloth_height * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                
+                                # Make patterns at least MIN_PATTERN_WIDTH_RATIO of cloth dimensions for visibility
+                                min_width = cloth_width * PATTERN_FITTING["MIN_PATTERN_WIDTH_RATIO"]
+                                min_height = cloth_height * PATTERN_FITTING["MIN_PATTERN_HEIGHT_RATIO"]
+                                pattern_width = max(pattern_width, min_width)
+                                pattern_height = max(pattern_height, min_height)
+                        except Exception:
+                            logger.warning(
+                                f"Failed to get dimensions for pattern {idx}"
+                            )
+
+                    area = pattern_width * pattern_height
+                    sorted_patterns.append(
+                        (idx, pattern, area, pattern_width, pattern_height)
+                    )
+
+                # Sort by area (descending)
+                sorted_patterns.sort(key=lambda x: x[2], reverse=True)
+
+                # Grid-based placement - use the already defined cloth_width and cloth_height
+
+                # Start placing from the center
+                center_x, center_y = cloth_width // 2, cloth_height // 2
+
+                # Try to place each pattern
+                for idx, pattern, _area, width, height in sorted_patterns:
+                    placed = False
+
+                    # Generate positions to try, focusing on inside the cloth mask
+                    positions = []
+                    max_radius = min(cloth_width, cloth_height) // 2
+                    
+                    # Use cloth mask to generate valid positions if available
+                    cloth_mask = processed_cloth.get("cloth_mask")
+                    if cloth_mask is not None and cloth_mask.size > 0:
+                        # Resize mask if needed to match cloth dimensions
+                        if cloth_mask.shape[0] != cloth_height or cloth_mask.shape[1] != cloth_width:
+                            try:
+                                cloth_mask = cv2.resize(
+                                    cloth_mask, 
+                                    (cloth_width, cloth_height),
+                                    interpolation=cv2.INTER_NEAREST
+                                )
+                            except Exception as e:
+                                logger.warning(f"Error resizing cloth mask for position generation: {e}")
+                        
+                        # Find non-zero positions (inside the cloth)
+                        non_zero_positions = np.argwhere(cloth_mask > 0)
+                        # Convert to (x, y) format and sample points throughout the cloth
+                        if len(non_zero_positions) > 0:
+                            # Take a sample of points spread throughout the cloth
+                            # Use a step size that gives us about 100 sample points
+                            step = max(1, len(non_zero_positions) // 100)
+                            for pos in non_zero_positions[::step]:
+                                positions.append((int(pos[1]), int(pos[0])))  # x, y format
+                    
+                    # If no positions from cloth mask or very few, add spiral positions
+                    if len(positions) < 20:
+                        # Start from center of cloth
+                        positions.append((center_x, center_y))
+                        
+                        # Add positions in increasing distance from center
+                        for radius in range(max_radius // 10, max_radius, max_radius // 10):
+                            for angle in range(0, 360, PATTERN_FITTING["SPIRAL_ANGLE_STEP"]):  # Try positions every N degrees
+                                x = center_x + int(radius * np.cos(np.radians(angle)))
+                                y = center_y + int(radius * np.sin(np.radians(angle)))
+                                positions.append((x, y))
+
+                    # Try all positions with different rotations
+                    for rot in PATTERN_FITTING["ROTATION_ANGLES"]:
+                        for pos in positions[:PATTERN_FITTING["MAX_POSITIONS_TO_TRY"]]:
+                            # Adjust position to center the pattern
+                            adj_x = max(
+                                0,
+                                min(cloth_width - int(width), pos[0] - int(width) // 2),
+                            )
+                            adj_y = max(
+                                0,
+                                min(
+                                    cloth_height - int(height), pos[1] - int(height) // 2
+                                ),
+                            )
+
+                            # Direct placement without the environment
+                            # Create a rectangular mask for the pattern
+                            pattern_mask = np.zeros_like(best_state)
+                            rot_width = width if rot == 0 else height
+                            rot_height = height if rot == 0 else width
+                            
+                            # Make sure coordinates are valid
+                            valid_x = min(max(0, adj_x), cloth_width - int(rot_width))
+                            valid_y = min(max(0, adj_y), cloth_height - int(rot_height))
+                            
+                            # Create mask for this position
+                            pattern_mask[valid_y:valid_y+int(rot_height), valid_x:valid_x+int(rot_width)] = 1
+                            
+                            # Get cloth mask for checking if pattern is inside the cloth
+                            cloth_mask = processed_cloth.get("cloth_mask")
+                            
+                            # Check if placement would overlap existing patterns AND ensure it's inside the cloth
+                            if not np.any(best_state & pattern_mask):
+                                # Additional check to ensure pattern is inside cloth mask
+                                if cloth_mask is not None and cloth_mask.size > 0:
+                                    # Resize cloth mask if needed to match best_state dimensions
+                                    if cloth_mask.shape != best_state.shape:
+                                        try:
+                                            cloth_mask = cv2.resize(
+                                                cloth_mask, 
+                                                (best_state.shape[1], best_state.shape[0]),
+                                                interpolation=cv2.INTER_NEAREST
+                                            )
+                                        except Exception as e:
+                                            logger.warning(f"Error resizing cloth mask: {e}")
+                                            
+                                    # Check if pattern is fully contained within the cloth
+                                    pattern_area = np.sum(pattern_mask)
+                                    overlap_with_cloth = np.sum(pattern_mask & (cloth_mask > 0))
+                                    
+                                    # Only place if at least 95% of pattern is within cloth
+                                    if overlap_with_cloth >= pattern_area * 0.95:
+                                        # Place pattern (with index+1 for visualization)
+                                        best_state[valid_y:valid_y+int(rot_height), valid_x:valid_x+int(rot_width)] = idx + 1
+                                    else:
+                                        # Skip - pattern not fully inside cloth
+                                        continue
+                                else:
+                                    # No cloth mask - just place the pattern
+                                    best_state[valid_y:valid_y+int(rot_height), valid_x:valid_x+int(rot_width)] = idx + 1
+                                
+                                # Add to placements
+                                placements.append(
+                                    {
+                                        "pattern_id": idx,
+                                        "x": valid_x,
+                                        "y": valid_y,
+                                        "rotation": rot,
+                                    }
+                                )
+                                logger.info(
+                                    f"Added optimized placement for pattern {idx} at ({adj_x}, {adj_y}) with rotation {rot}"
+                                )
+                                placed = True
+                                break
+
+                        if placed:
+                            break
+
+                    # If we couldn't place this pattern, log a warning
+                    if not placed:
+                        logger.warning(
+                            f"Failed to place pattern {idx} in optimized layout"
+                        )
+
+                # If still no placements made, fall back to simple placement
+                if not placements:
+                    logger.warning(
+                        "Optimized placement failed. Using simple fallback with cloth bounds check."
+                    )
+
+                    # Use a grid placement inside the cloth bounds
+                    # First determine the cloth bounds - it might not be a rectangle
+                    try:
+                        # Use processed_cloth directly instead of self
+                        if "cloth_polygon" in processed_cloth and processed_cloth["cloth_polygon"] is not None:
+                            cloth_bounds = processed_cloth["cloth_polygon"].bounds
+                            min_x, min_y, max_x, max_y = cloth_bounds
+                        else:
+                            # Fallback to using cloth dimensions
+                            min_x, min_y = 0, 0
+                            max_x, max_y = processed_cloth["width"], processed_cloth["height"]
+
+                        # Adjust bounds to ensure we're safely inside the cloth
+                        safe_min_x = min_x + (max_x - min_x) * 0.1
+                        safe_max_x = max_x - (max_x - min_x) * 0.1
+                        safe_min_y = min_y + (max_y - min_y) * 0.1
+                        safe_max_y = max_y - (max_y - min_y) * 0.1
+
+                        # Create a grid of positions
+                        positions = []
+                        grid_size = 3  # 3x3 grid
+
+                        for i in range(grid_size):
+                            for j in range(grid_size):
+                                pos_x = safe_min_x + (safe_max_x - safe_min_x) * (
+                                    i / (grid_size - 1)
+                                )
+                                pos_y = safe_min_y + (safe_max_y - safe_min_y) * (
+                                    j / (grid_size - 1)
+                                )
+                                positions.append((int(pos_x), int(pos_y)))
+
+                        # Use positions for each pattern
+                        for idx, pattern in enumerate(processed_patterns):
+                            # Calculate pattern size for the pattern
+                            width, height = 50, 50  # Default size
+                            if "dimensions" in pattern:
+                                try:
+                                    dims = pattern["dimensions"]
+                                    if hasattr(dims, "tolist"):
+                                        dims = dims.tolist()
+                                    width, height = map(float, dims)
+
+                                    # Scale if values are too small
+                                    if width < 1.0 and height < 1.0:
+                                        width *= cloth_width * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                        height *= cloth_height * PATTERN_FITTING["PATTERN_SCALE_FACTOR"]
+                                        
+                                        # Make patterns at least MIN_PATTERN_WIDTH_RATIO of cloth dimensions for visibility
+                                        min_width = cloth_width * PATTERN_FITTING["MIN_PATTERN_WIDTH_RATIO"]
+                                        min_height = cloth_height * PATTERN_FITTING["MIN_PATTERN_HEIGHT_RATIO"]
+                                        width = max(width, min_width)
+                                        height = max(height, min_height)
+                                except Exception:
+                                    logger.warning(
+                                        f"Failed to get dimensions for pattern {idx}"
+                                    )
+
+                            # Try each position until we find one that works
+                            for pos in positions:
+                                pos_x, pos_y = pos
+
+                                # Adjust position to fit pattern size
+                                adj_x = max(safe_min_x, min(safe_max_x - width, pos_x))
+                                adj_y = max(safe_min_y, min(safe_max_y - height, pos_y))
+
+                                # Create a dummy polygon to check placement
+                                test_poly = sg.box(
+                                    adj_x, adj_y, adj_x + width, adj_y + height
+                                )
+
+                                # Check if this position works
+                                cloth_polygon = processed_cloth.get("cloth_polygon")
+                                if cloth_polygon is not None and cloth_polygon.contains(test_poly):
+                                    # Valid position found
+                                    # We found a valid position
+                                    placements.append(
+                                        {
+                                            "pattern_id": idx,
+                                            "x": int(adj_x),
+                                            "y": int(adj_y),
+                                            "rotation": 0,
+                                        }
+                                    )
+                                    logger.info(
+                                        f"Added validated fallback placement for pattern {idx} at ({int(adj_x)}, {int(adj_y)})"
+                                    )
+                                    # Remove this position from consideration
+                                    positions.remove(pos)
+                                    break
+
+                            # Don't add patterns that don't fit - we'll skip them completely
+                            if len(placements) <= idx:
+                                # Just log the skipped pattern
+                                logger.warning(
+                                    f"Pattern {idx} could not be placed within cloth boundary - skipping it"
+                                )
+
+                    except Exception as e:
+                        logger.error(f"Error in fallback placement: {e}")
+                        # Very simple placement as last resort but only for patterns that fit
+                        for idx, pattern in enumerate(processed_patterns):
+                            try:
+                                # Create a rectangle for this pattern
+                                width, height = 50, 50  # Default size
+                                if "dimensions" in pattern:
+                                    try:
+                                        dims = pattern["dimensions"]
+                                        if hasattr(dims, "tolist"):
+                                            dims = dims.tolist()
+                                        width, height = map(float, dims)
+                                        if width < 1.0 and height < 1.0:
+                                            width, height = width * 100, height * 100
+                                    except Exception:
+                                        pass
+
+                                # Create test rectangle
+                                pos_x, pos_y = 100, 100 + idx * 100
+                                test_rect = sg.box(
+                                    pos_x, pos_y, pos_x + width, pos_y + height
+                                )
+
+                                # Only add if it fits in the cloth
+                                cloth_polygon = processed_cloth.get("cloth_polygon")
+                                if cloth_polygon is not None and cloth_polygon.contains(test_rect):
+                                    placements.append(
+                                        {
+                                            "pattern_id": idx,
+                                            "x": pos_x,
+                                            "y": pos_y,
+                                            "rotation": 0,
+                                        }
+                                    )
+                                    logger.info(
+                                        f"Added simple emergency fallback for pattern {idx}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Skipping pattern {idx} in emergency placement - doesn't fit in cloth"
+                                    )
+                            except Exception as pattern_err:
+                                logger.error(
+                                    f"Error placing pattern {idx} in emergency mode: {pattern_err}"
+                                )
+
+            # Finalize result
+            # Create a fallback final state with proper dimensions if needed
+            if best_state is not None:
+                final_state = best_state
+            elif hasattr(env, 'cloth_state') and env.cloth_state is not None:
+                final_state = env.cloth_state
+            else:
+                # Default empty state
+                cloth_width = processed_cloth.get('width', 512)
+                cloth_height = processed_cloth.get('height', 512)
+                final_state = np.zeros((int(cloth_height), int(cloth_width)), dtype=np.uint8)
+                
+            # Calculate utilization manually based on the actual placements
+            # This is a more accurate method than relying on environment's calculation
+            # especially when we're using the manual fallback placement
+            try:
+                # Get cloth mask for accurate area calculation
+                cloth_mask = processed_cloth.get('cloth_mask')
+                if cloth_mask is not None and np.sum(cloth_mask) > 0:
+                    # Resize mask if dimensions don't match
+                    if cloth_mask.shape != final_state.shape:
+                        try:
+                            cloth_mask = cv2.resize(
+                                cloth_mask, 
+                                (final_state.shape[1], final_state.shape[0]),
+                                interpolation=cv2.INTER_NEAREST
+                            )
+                        except Exception as e:
+                            logger.warning(f"Error resizing cloth mask for utilization: {e}")
+                    
+                    # Calculate cloth area (only non-zero pixels)
+                    cloth_area = np.sum(cloth_mask > 0)
+                    
+                    # Calculate area covered by patterns (non-zero in final_state AND inside cloth)
+                    pattern_area = np.sum((final_state > 0) & (cloth_mask > 0))
+                    
+                    # Calculate utilization as pattern area / cloth area
+                    if cloth_area > 0:
+                        final_utilization = pattern_area / cloth_area
+                    else:
+                        final_utilization = 0.0
+                    
+                    logger.info(f"Manual utilization calculation: {pattern_area}/{cloth_area} = {final_utilization:.4f}")
+                else:
+                    # Fallback to simpler calculation
+                    total_area = final_state.shape[0] * final_state.shape[1]
+                    used_area = np.sum(final_state > 0)
+                    final_utilization = used_area / total_area if total_area > 0 else 0.0
+                    logger.info(f"Simple utilization calculation: {used_area}/{total_area} = {final_utilization:.4f}")
+            except Exception as e:
+                logger.error(f"Error calculating utilization: {e}")
+                final_utilization = best_utilization
+                if final_utilization <= 0:
+                    try:
+                        if hasattr(env, '_calculate_utilization'):
+                            final_utilization = env._calculate_utilization()
+                        else:
+                            final_utilization = 0.0
+                    except Exception:
+                        final_utilization = 0.0
+
+            logger.info(
+                f"Pattern fitting complete. Final utilization: {final_utilization:.4f}"
             )
 
-        plt.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left")
-        plt.tight_layout()
+            return {
+                "final_state": final_state,
+                "utilization": final_utilization,
+                "placements": placements,
+                "cloth_dims": (processed_cloth.get('width', 512), processed_cloth.get('height', 512)),
+                "patterns": processed_patterns,
+            }
 
-        # Save if path provided
-        if save_path:
-            # Create directory if it doesn't exist
-            os.makedirs(
-                os.path.dirname(save_path) if os.path.dirname(save_path) else ".",
-                exist_ok=True,
-            )
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
-            logger.info(f"Visualization saved to {save_path}")
+        except Exception as e:
+            logger.error(f"Error during pattern fitting: {e}")
 
-        # Show the plot
-        plt.show()
-        plt.close()
+            # Create fallback result with proper dimensions
+            width = int(processed_cloth.get('width', 512))
+            height = int(processed_cloth.get('height', 512))
+            return {
+                "final_state": np.zeros((height, width), dtype=np.uint8),
+                "utilization": 0.0,
+                "placements": [],
+                "cloth_dims": (width, height),
+                "patterns": processed_patterns,
+            }
