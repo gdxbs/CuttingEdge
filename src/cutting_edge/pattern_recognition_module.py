@@ -66,7 +66,9 @@ class PatternRecognizer(nn.Module):
 
         # Dimension estimator (width/height)
         self.dimension_estimator = nn.Sequential(
-            nn.Linear(self.feature_dim, 128), nn.ReLU(), nn.Linear(128, 2)
+            nn.Linear(self.feature_dim, PATTERN["ESTIMATOR_HIDDEN_DIM"]),
+            nn.ReLU(),
+            nn.Linear(PATTERN["ESTIMATOR_HIDDEN_DIM"], 2),
         )
 
     def _create_backbone(self) -> Tuple[nn.Module, int]:
@@ -185,7 +187,12 @@ class PatternRecognitionModule:
         # Try adaptive thresholding first
         try:
             binary = cv2.adaptiveThreshold(
-                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
+                PATTERN["ADAPTIVE_THRESH_C"],
             )
         except Exception:
             # Fallback to regular thresholding
@@ -194,7 +201,7 @@ class PatternRecognitionModule:
             )
 
         # Clean up with morphology operations
-        kernel = np.ones((5, 5), np.uint8)
+        kernel = np.ones(PATTERN["MORPH_KERNEL_SIZE"], np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
@@ -231,7 +238,10 @@ class PatternRecognitionModule:
 
             # Detect corners
             corners = cv2.goodFeaturesToTrack(
-                mask, maxCorners=8, qualityLevel=0.01, minDistance=10
+                mask,
+                maxCorners=PATTERN["MAX_CORNERS"],
+                qualityLevel=PATTERN["CORNER_QUALITY_LEVEL"],
+                minDistance=PATTERN["CORNER_MIN_DISTANCE"],
             )
             if corners is not None:
                 key_points = [tuple(corner.ravel()) for corner in corners]

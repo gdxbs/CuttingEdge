@@ -7,6 +7,9 @@ All magic numbers and settings are defined here for easy modification.
 SYSTEM = {
     "BASE_DIR": "/Users/aryaminus/Developer/cutting-edge",
     "IMAGES_DIR": "images",
+    "PATTERN_DIR_NAME": "shape",
+    "CLOTH_DIR_NAME": "cloth",
+    "IMAGE_EXTENSIONS": ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"],
     "MODELS_DIR": "models",
     "OUTPUT_DIR": "output",
     "DATA_DIR": "data",
@@ -42,6 +45,14 @@ PATTERN = {
     # CNN Architecture (feature extraction)
     "BACKBONE": "resnet18",  # Options: "simple", "resnet18", "efficientnet-b0"
     "FEATURE_DIM": 512,  # Feature dimension for resnet18
+    "ESTIMATOR_HIDDEN_DIM": 128,
+    # CV settings
+    "ADAPTIVE_THRESH_BLOCK_SIZE": 11,
+    "ADAPTIVE_THRESH_C": 2,
+    "MORPH_KERNEL_SIZE": (5, 5),
+    "MAX_CORNERS": 8,
+    "CORNER_QUALITY_LEVEL": 0.01,
+    "CORNER_MIN_DISTANCE": 10,
     # Data augmentation (for training)
     "AUGMENTATION": {
         "horizontal_flip": True,
@@ -69,8 +80,31 @@ CLOTH = {
     "HSV_UPPER": [180, 255, 240],  # Upper bound for cloth detection
     "MORPH_KERNEL_SIZE": 5,
     "MORPH_ITERATIONS": 2,
+    # U-Net settings
+    "UNET_IN_CHANNELS": 3,
+    "UNET_OUT_CHANNELS": 2,
+    # CV settings
+    "THRESHOLD_VALUE": 127,
+    "MIN_DEFECT_AREA": 10,
     # Material types
     "TYPES": ["cotton", "silk", "wool", "polyester", "mixed", "other"],
+    # Heuristics for cloth type detection
+    "TYPE_HEURISTICS": {
+        "saturation_threshold": 30,
+        "value_threshold": 200,
+        "hue_red_lower": 30,
+        "hue_red_upper": 150,
+        "saturation_vibrant": 100,
+    },
+    # Gabor filter settings for texture analysis
+    "GABOR_SETTINGS": {
+        "ksize": (21, 21),
+        "sigma": 5,
+        "lambd": 10,
+        "gamma": 0.5,
+        "psi": 0,
+        "orientations": 4,
+    },
 }
 
 # Pattern fitting settings
@@ -81,6 +115,7 @@ FITTING = {
     "ROTATION_ANGLES": [0, 90, 180, 270],  # Angles to try (degrees)
     "ALLOW_FLIPPING": True,  # Whether to try flipped patterns
     "MIN_PATTERN_COVERAGE": 0.95,  # Minimum pattern coverage by cloth (%)
+    "OVERLAP_TOLERANCE": 0.01,  # Allowable overlap between patterns (%)
     "GRID_SAMPLE_SIZE": 100,  # Max grid points to sample
     "MIN_GAP_SIZE": 20,  # Minimum useful gap size (cm)
     # Rewards system

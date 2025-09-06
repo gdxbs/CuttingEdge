@@ -1,115 +1,52 @@
 # Cutting Edge Project Issues
 
-This document tracks the progress of the Cutting Edge project and outlines remaining work based on what has been accomplished to date.
+This document tracks the progress of the Cutting Edge project.
 
-## Completed Issues
+**Note:** The project has undergone a major refactoring to simplify the architecture, remove heavy dependencies (like `stable-baselines3` and `gymnasium`), and focus on a more robust, geometry-based approach for pattern fitting using `shapely`. Many of the original issues related to the complex Hierarchical Reinforcement Learning (HRL) approach are now obsolete.
 
-### Week 1: Setup & Data Preparation
-- ✅ Issue 1.1: Development Environment & Repository Setup
-- ✅ Issue 1.2: Dataset Loading & Parsing
-- ✅ Issue 1.3: Data Preprocessing & Augmentation
-- ✅ Issue 1.4: Pattern Type Mapping
-- ✅ Issue 1.5: Data Split Validation
+## Completed / Obsolete Issues
 
-### Week 2: Model Component Development
-- ✅ Issue 2.1: Feature Extraction Module with ResNet50
-- ✅ Issue 2.2: Dimension Estimation Module (Using MLP instead of EfficientNet)
-- ✅ Issue 2.3: Classification Module (Implemented in CNN structure)
-- ✅ Issue 2.4: U-Net Module for Cloth Segmentation
+### Original Plan (Weeks 1-6) - Largely Obsolete
 
-### Week 3: Integration & Training Pipeline
-- ✅ Issue 3.1: Pipeline Integration
-- ✅ Issue 3.2: Loss Functions & Optimizer Setup
-- ✅ Issue 3.3: Training Loop Implementation
-- ✅ Issue 3.5: Model Checkpointing
+The original sprint plan is no longer relevant due to the architectural changes. Key functionalities were achieved in a more direct way.
 
-### Week 5: Inference Pipeline (Partial)
-- ✅ Issue 5.1: Inference Pipeline Development
-- ✅ Issue 5.2: Preprocessing for User Input
-- ✅ Issue 5.4: Cloth Image Processing Pipeline
+-   ✅ **Core Modules Refactored**: All main modules (`pattern_recognition`, `cloth_recognition`, `pattern_fitting`) have been completely rewritten for simplicity, readability, and robustness.
+-   ✅ **HRL Module Replaced**: The complex HRL-based placement has been replaced with a more suitable geometric optimization approach, resolving all related implementation issues.
+-   ✅ **Dataset Loader Removed**: The `dataset.py` and `utils.py` files were removed, as the new architecture does not require a complex data loading pipeline for its core functionality. This makes the "Dataset Structure Mismatch" issue obsolete.
+-   ✅ **Configuration Centralized**: All magic numbers and settings have been moved to `config.py`, improving maintainability.
+-   ✅ **Corner/Feature Extraction**: This is now handled by a combination of OpenCV in `pattern_recognition_module` and is sufficient for the current system.
+-   ✅ **Basic Training Pipeline**: Placeholder training functions exist in each module, and the main entry point supports a `--mode train` flag.
 
-## Remaining Issues
-
-### Week 2-3: Model Components & Integration
-- Issue 2.5: Unit Testing for Individual Modules
-- Issue 3.4: Logging & Metric Monitoring (Basic logging implemented but needs enhancement)
-
-### Week 4: Model Training & Validation
-- Issue 4.1: Run Initial Training Sessions (Framework exists but needs actual dataset)
-- Issue 4.2: Hyperparameter Tuning
-- Issue 4.3: Validation & Best Model Selection (Basic validation implemented but needs enhancement)
-- Issue 4.4: Debugging Training Issues
-- Issue 4.5: Documentation of Training Process
-
-### Week 5: Inference & Integration
-- Issue 5.3: Feature & Corner Extraction for Patterns (Corner detection implementation is incomplete)
-- Issue 5.5: HRL-Based Placement Module Integration (Not started)
-
-### Week 6: Final Integration & Testing
-- Issue 6.1: End-to-End Pipeline Testing
-- Issue 6.2: Integration Debugging & Bug Fixes
-- Issue 6.3: Final Validation with Real Data
-- Issue 6.4: Prepare Documentation & Deployment Guidelines
-- Issue 6.5: Post-Mortem & Sprint Review
-
-## New Issues Based on Current State
+## Remaining Issues & Future Enhancements
 
 ### High Priority
 
-1. **✅ Fix Project Structure Inconsistency**
-   - ✅ Fixed package names in pyproject.toml (changed from "cut_fit_problem" to "cutting_edge")
-   - ✅ Updated project URLs in pyproject.toml to reference correct repository
-   - ✅ Updated pytest config to use correct package name
-   - ✅ Fixed import statements in main.py and pattern_recognition_module.py
+1.  **Implement a Real Training Loop**
+    -   The current `train()` functions in the modules are placeholders.
+    -   A proper training loop needs to be implemented, especially for the optional `PlacementOptimizer` in the fitting module, likely using a simple supervised or policy gradient approach.
+    -   Requires creating a dataset of (state, optimal_action, reward) tuples.
 
-2. **Fix Dataset Structure Mismatch**
-   - Dataset loader code expects a specific file structure that doesn't match the actual GarmentCodeData_v2 structure
-   - Analyze the actual dataset structure and adapt the code to work with it
-   - Or reorganize dataset files to match the expected structure
-   - Fix file paths and parsing logic in DatasetLoader and PatternDataset classes
-
-2. **Complete Pattern Recognition Module**
-   - Finish corner detection functionality (currently commented out in the training loop)
-   - Enhance validation metrics and procedures
-   - Add comprehensive data augmentation pipeline
-
-3. **Implement Smart Placement Algorithm (HRL Module)**
-   - Develop algorithm for optimal pattern placement on cloth
-   - Integrate with existing pattern and cloth recognition modules
-   - Replace placeholder visualization in main.py with actual placement algorithm
-
-4. **Create Comprehensive Test Suite**
-   - Add unit tests for pattern recognition module
-   - Add unit tests for cloth recognition module
-   - Add integration tests for the full pipeline
+2.  **Create a Comprehensive Test Suite**
+    -   Add unit tests for the core functions in each module (e.g., `calculate_placement_score`, `is_valid_placement`).
+    -   Add integration tests for the full `run_fitting_task` pipeline.
 
 ### Medium Priority
 
-5. **Enhance Training Pipeline**
-   - Add more sophisticated logging and visualization of training metrics
-   - Implement hyperparameter tuning framework
-   - Add early stopping and learning rate scheduling
+3.  **Enhance Logging & Metric Monitoring**
+    -   While logging is implemented, it could be more structured.
+    -   Integrate a tool like TensorBoard or Weights & Biases to visualize training progress and fitting results over time.
 
-6. **Improve Documentation**
-   - Add detailed API documentation for all modules
-   - Create tutorial notebooks with usage examples
-   - Document installation and usage requirements for GarmentCodeData dataset
+4.  **Improve Documentation**
+    -   Add detailed API documentation (docstrings) for all public methods.
+    -   Create a simple tutorial notebook demonstrating the usage of the system.
 
-7. **Optimize Performance**
-   - Profile and optimize slow parts of the code
-   - Add batch processing for multiple images
-   - Implement model quantization for faster inference
+### Low Priority / Future Features
 
-### Low Priority
+5.  **Feature: Multi-Cloth Support**
+    -   Extend the system to consider multiple available cloth pieces to best fit a given set of patterns.
 
-8. **Feature: Multi-Pattern Layout**
-   - Support for placing multiple different patterns on a single cloth piece
-   - Implement optimization for multiple patterns
+6.  **Feature: Waste Optimization**
+    -   The system currently optimizes placement but doesn't analyze the remaining "waste" pieces. An enhancement could be to identify if leftover pieces are large enough for future use.
 
-9. **Feature: 3D Visualization**
-   - Add 3D visualization of garments from patterns
-   - Interface with 3D rendering tools
-
-10. **Feature: Material-Specific Adjustments**
-    - Adapt pattern placement based on cloth properties
-    - Account for fabric grain directions and stretch characteristics
+7.  **Feature: Material-Specific Adjustments**
+    -   The `material_properties` in the `ClothMaterial` object (e.g., grain direction) are extracted but not yet fully used in the fitting score. The scoring function could be enhanced to account for these.

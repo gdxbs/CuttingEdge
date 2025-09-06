@@ -69,11 +69,11 @@ class CuttingEdgeSystem:
         """
         logger.info("Scanning for images...")
 
-        pattern_dir = self.images_dir / "shape"
-        cloth_dir = self.images_dir / "cloth"
+        pattern_dir = self.images_dir / SYSTEM["PATTERN_DIR_NAME"]
+        cloth_dir = self.images_dir / SYSTEM["CLOTH_DIR_NAME"]
 
         # Image extensions to look for
-        extensions = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]
+        extensions = SYSTEM["IMAGE_EXTENSIONS"]
 
         # Find pattern images
         pattern_files = []
@@ -469,7 +469,7 @@ def main():
         elif args.pattern_dir:
             pattern_dir = Path(args.pattern_dir)
             if pattern_dir.exists():
-                for ext in ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]:
+                for ext in SYSTEM["IMAGE_EXTENSIONS"]:
                     pattern_paths.extend([str(f) for f in pattern_dir.glob(f"*.{ext}")])
 
         # Get cloth path

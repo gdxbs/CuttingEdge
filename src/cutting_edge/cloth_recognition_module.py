@@ -149,7 +149,10 @@ class ClothRecognitionModule:
         # Create segmentation model if configured to use U-Net
         self.use_unet = CLOTH["USE_UNET"]
         if self.use_unet:
-            self.model = UNetSegmenter(in_channels=3, out_channels=2)
+            self.model = UNetSegmenter(
+                in_channels=CLOTH["UNET_IN_CHANNELS"],
+                out_channels=CLOTH["UNET_OUT_CHANNELS"],
+            )
             self.model.to(self.device)
 
         # Material type mapping
@@ -221,9 +224,11 @@ class ClothRecognitionModule:
                 defect_mask = cv2.resize((defect_mask * 255).astype(np.uint8), (w, h))
 
                 # Threshold to get binary masks
-                _, cloth_binary = cv2.threshold(cloth_mask, 127, 255, cv2.THRESH_BINARY)
+                _, cloth_binary = cv2.threshold(
+                    cloth_mask, CLOTH["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY
+                )
                 _, defect_binary = cv2.threshold(
-                    defect_mask, 127, 255, cv2.THRESH_BINARY
+                    defect_mask, CLOTH["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY
                 )
 
             except Exception as e:
@@ -250,7 +255,9 @@ class ClothRecognitionModule:
             # Filter defects (keep only those inside the cloth)
             valid_defects = []
             for defect in defect_contours:
-                if cv2.contourArea(defect) > 10:  # Ignore tiny defects
+                if (
+                    cv2.contourArea(defect) > CLOTH["MIN_DEFECT_AREA"]
+                ):  # Ignore tiny defects
                     # Check if defect is inside cloth
                     M = cv2.moments(defect)
                     if M["m00"] > 0:
@@ -357,16 +364,19 @@ class ClothRecognitionModule:
         # Simple cloth type classification based on HSV values
         h, s, v = mean_hsv
 
-        # Very simple rule-based classification
-        if s < 30:  # Low saturation (grayscale)
-            if v > 200:
+        # Very simple rule-based classification using heuristics from config
+        heuristics = CLOTH["TYPE_HEURISTICS"]
+        if s < heuristics["saturation_threshold"]:  # Low saturation (grayscale)
+            if v > heuristics["value_threshold"]:
                 return "cotton"  # Light, neutral
             else:
                 return "wool"  # Dark, neutral
         else:  # Has color
-            if h < 30 or h > 150:  # Reddish or purple
+            if (
+                h < heuristics["hue_red_lower"] or h > heuristics["hue_red_upper"]
+            ):  # Reddish or purple
                 return "silk"
-            elif s > 100:  # Vibrant colors
+            elif s > heuristics["saturation_vibrant"]:  # Vibrant colors
                 return "polyester"
             else:
                 return "mixed"
@@ -386,10 +396,18 @@ class ClothRecognitionModule:
             # Create Gabor filters for different orientations
             orientations = []
             responses = []
+            gabor_settings = CLOTH["GABOR_SETTINGS"]
 
-            for theta in np.linspace(0, np.pi, 4):
+            for theta in np.linspace(
+                0, np.pi, gabor_settings["orientations"], endpoint=False
+            ):
                 kernel = cv2.getGaborKernel(
-                    ksize=(21, 21), sigma=5, theta=theta, lambd=10, gamma=0.5, psi=0
+                    ksize=gabor_settings["ksize"],
+                    sigma=gabor_settings["sigma"],
+                    theta=theta,
+                    lambd=gabor_settings["lambd"],
+                    gamma=gabor_settings["gamma"],
+                    psi=gabor_settings["psi"],
                 )
                 filtered = cv2.filter2D(gray, cv2.CV_32F, kernel)
                 mean_response = cv2.mean(filtered, mask=mask)[0]

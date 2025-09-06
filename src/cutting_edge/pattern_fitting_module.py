@@ -233,7 +233,9 @@ class PatternFittingModule:
             if pattern_poly.intersects(placement.placement_polygon):
                 # Allow very small overlaps
                 overlap = pattern_poly.intersection(placement.placement_polygon)
-                if overlap.area > 0.01 * pattern_poly.area:  # More than 1% overlap
+                if (
+                    overlap.area > FITTING["OVERLAP_TOLERANCE"] * pattern_poly.area
+                ):  # More than 1% overlap
                     return False, coverage
 
         # Check for defects
