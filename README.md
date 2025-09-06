@@ -1,5 +1,7 @@
 # Cutting Edge: Garment Pattern Recognition System
 
+> **New!** We now have a [simplified version](README_SIMPLE.md) that's perfect for beginners in computer vision and reinforcement learning. If you're new to these fields, we recommend starting with the simplified system.
+
 ## Overview
 
 Cutting Edge is a computer vision system that analyzes garment patterns and cloth materials using deep learning. The system helps in garment manufacturing by recognizing pattern types, detecting key features, and estimating dimensions for optimal pattern placement on cloth materials to minimize waste.
@@ -142,7 +144,22 @@ deactivate
 
 ## Usage
 
-### Training
+### Quick Start (Simplified System) - Recommended for Beginners
+
+```bash
+# Single pattern fitting with automatic dimension detection
+python -m src.cutting_edge.simple_main --pattern images/shape/pattern_50x80.png --cloth images/cloth/cloth_200x300.jpeg
+
+# Multi-pattern fitting
+python -m src.cutting_edge.simple_main --multi_pattern
+
+# Train models
+python -m src.cutting_edge.simple_main --mode train
+```
+
+See [README_SIMPLE.md](README_SIMPLE.md) for detailed instructions on the simplified system.
+
+### Advanced Usage (Original System)
 
 ```bash
 # Train pattern recognition model
@@ -150,11 +167,7 @@ python -m cutting_edge.main --dataset_path /path/to/garment_data --train --epoch
 
 # Train pattern fitting model
 python -m cutting_edge.main --train_fitting --fitting_episodes 100 --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg
-```
 
-### Inference
-
-```bash
 # Basic pattern and cloth recognition
 python -m cutting_edge.main --pattern_model_path models/pattern_recognition_model.pth --pattern_image path/to/pattern.jpg --cloth_image path/to/cloth.jpg
 
