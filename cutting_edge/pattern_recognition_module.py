@@ -212,11 +212,12 @@ class PatternRecognitionModule:
 
         # No contours found
         if not contours:
-            logger.warning(f"No contours found in {image_path}")
-            return {"contour": np.array([]), "key_points": []}
-
-        # Get the largest contour (assumed to be the pattern)
-        main_contour = max(contours, key=cv2.contourArea)
+            logger.warning(f"No contours found in {image_path}, falling back to full image")
+            h, w = img.shape[:2]
+            main_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]])
+        else:
+            # Get the largest contour (assumed to be the pattern)
+            main_contour = max(contours, key=cv2.contourArea)
 
         # Simplify the contour
         perimeter = cv2.arcLength(main_contour, True)

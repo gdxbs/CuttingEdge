@@ -312,6 +312,12 @@ class PatternFittingModule:
                     # Penalize small gaps
                     if geom.area < (FITTING["MIN_GAP_SIZE"] ** 2):
                         score += rewards["gap_penalty"]
+        
+        # 5. Origin bonus (patterns close to the origin)
+        centroid = pattern_poly.centroid
+        distance_to_origin = np.sqrt(centroid.x**2 + centroid.y**2)
+        origin_factor = 1 - (distance_to_origin / np.sqrt(cloth_poly.area))
+        score += rewards["origin_bonus"] * origin_factor
 
         return score
 
