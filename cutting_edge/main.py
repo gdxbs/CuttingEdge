@@ -79,13 +79,13 @@ class CuttingEdgeSystem:
         pattern_files = []
         if pattern_dir.exists():
             for ext in extensions:
-                pattern_files.extend(list(pattern_dir.glob(f"*.{ext}")))
+                pattern_files.extend(list(pattern_dir.glob(f"**/*.{ext}")))
 
         # Find cloth images
         cloth_files = []
         if cloth_dir.exists():
             for ext in extensions:
-                cloth_files.extend(list(cloth_dir.glob(f"*.{ext}")))
+                cloth_files.extend(list(cloth_dir.glob(f"**/*.{ext}")))
 
         logger.info(
             f"Found {len(pattern_files)} pattern images and {len(cloth_files)} cloth images"

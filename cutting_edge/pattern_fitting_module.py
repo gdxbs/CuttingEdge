@@ -162,6 +162,9 @@ class PatternFittingModule:
         # Create polygon at origin
         polygon = Polygon(points)
 
+        # Translate to position
+        polygon = translate(polygon, position[0], position[1])
+
         # Apply transformations
         if flipped:
             # Flip horizontally
@@ -169,9 +172,6 @@ class PatternFittingModule:
 
         # Rotate around center
         polygon = rotate(polygon, rotation, origin="center")
-
-        # Translate to position
-        polygon = translate(polygon, position[0], position[1])
 
         return polygon
 
@@ -259,65 +259,33 @@ class PatternFittingModule:
         score = 0.0
         rewards = FITTING["REWARDS"]
 
-        # 1. Edge utilization bonus (patterns close to edges)
-        bounds = pattern_poly.bounds  # (minx, miny, maxx, maxy)
-        cloth_bounds = cloth_poly.bounds
-
-        # Calculate minimum distance to any edge
-        edge_distances = [
-            bounds[0] - cloth_bounds[0],  # distance to left edge
-            bounds[1] - cloth_bounds[1],  # distance to top edge
-            cloth_bounds[2] - bounds[2],  # distance to right edge
-            cloth_bounds[3] - bounds[3],  # distance to bottom edge
-        ]
-        min_edge_dist = min(max(0, d) for d in edge_distances)
-
-        # Bonus decreases with distance from edge
-        if min_edge_dist < 10:  # Within 10cm of edge
-            edge_factor = 1 - min_edge_dist / 10
-            score += rewards["edge_bonus"] * edge_factor
-
-        # 2. Compactness bonus (patterns close to other patterns)
-        if existing_placements:
-            # Find minimum distance to any other placement
-            min_distance = float("inf")
-            for placement in existing_placements:
-                dist = pattern_poly.distance(placement.placement_polygon)
-                min_distance = min(min_distance, dist)
-
-            # Closer patterns = higher bonus
-            if min_distance < 5:  # Within 5cm
-                compact_factor = 1 - min_distance / 5
-                score += rewards["compactness_bonus"] * compact_factor
-
-        # 3. Area utilization bonus (based on pattern area relative to cloth)
-        # This rewards placing larger patterns
+        # 1. Area utilization bonus (based on pattern area relative to cloth)
         utilization = pattern.area / (cloth_poly.area)
         score += rewards["utilization_bonus"] * utilization
 
-        # 4. Avoid creating small unusable gaps
-        # This is more complex - we use the "gap penalty"
+        # 2. Compactness bonus (patterns close to other patterns)
+        if existing_placements:
+            # Find average distance to all other placements
+            total_distance = 0
+            for placement in existing_placements:
+                total_distance += pattern_poly.distance(placement.placement_polygon)
+            avg_distance = total_distance / len(existing_placements)
+
+            # Closer patterns = higher bonus
+            if avg_distance < 10:  # Within 10cm on average
+                compact_factor = 1 - avg_distance / 10
+                score += rewards["compactness_bonus"] * compact_factor
+
+        # 3. Wasted space penalty
         if existing_placements:
             # Create a polygon for the remaining cloth space
             remaining = cloth_poly
             for placement in existing_placements:
                 remaining = remaining.difference(placement.placement_polygon)
 
-            # Check if this placement would create small isolated areas
-            remaining_after = remaining.difference(pattern_poly)
-
-            # If we get a multi-polygon, check for small isolated pieces
-            if hasattr(remaining_after, "geoms"):
-                for geom in remaining_after.geoms:
-                    # Penalize small gaps
-                    if geom.area < (FITTING["MIN_GAP_SIZE"] ** 2):
-                        score += rewards["gap_penalty"]
-        
-        # 5. Origin bonus (patterns close to the origin)
-        centroid = pattern_poly.centroid
-        distance_to_origin = np.sqrt(centroid.x**2 + centroid.y**2)
-        origin_factor = 1 - (distance_to_origin / np.sqrt(cloth_poly.area))
-        score += rewards["origin_bonus"] * origin_factor
+            # Penalize wasted space
+            waste_after = remaining.difference(pattern_poly)
+            score -= (remaining.area - waste_after.area) / cloth_poly.area * rewards["gap_penalty"]
 
         return score
 
@@ -390,6 +358,20 @@ class PatternFittingModule:
         """Get list of pattern types for encoding."""
         return ["shirt", "pants", "dress", "sleeve", "collar", "other"]
 
+    def add_heuristic_positions(self, positions_to_try: List, cloth: ClothMaterial):
+        """Add positions based on heuristics."""
+        # Corner positions
+        positions_to_try.append((0, 0, 0, False))
+        positions_to_try.append((cloth.width, 0, 0, False))
+        positions_to_try.append((0, cloth.height, 0, False))
+        positions_to_try.append((cloth.width, cloth.height, 0, False))
+
+        # Edge positions
+        positions_to_try.append((cloth.width / 2, 0, 0, False))
+        positions_to_try.append((0, cloth.height / 2, 0, False))
+        positions_to_try.append((cloth.width, cloth.height / 2, 0, False))
+        positions_to_try.append((cloth.width / 2, cloth.height, 0, False))
+
     def find_best_placement(
         self,
         pattern: Pattern,
@@ -445,6 +427,8 @@ class PatternFittingModule:
         grid_size = FITTING["GRID_SIZE"]
         step_x = cloth.width / grid_size
         step_y = cloth.height / grid_size
+
+        self.add_heuristic_positions(positions_to_try, cloth)
 
         for i in range(grid_size):
             for j in range(grid_size):
@@ -697,26 +681,28 @@ class PatternFittingModule:
             offset_y = 20
 
             for pattern in result["failed_patterns"]:
-                # Draw as rectangle
-                rect = patches.Rectangle(
-                    (offset_x, offset_y),
-                    pattern.width,
-                    pattern.height,
-                    linewidth=1,
-                    edgecolor="red",
-                    facecolor="gray",
+                # Draw actual contour
+                points = pattern.contour.squeeze().astype(float)
+                polygon = Polygon(points)
+                x, y = polygon.exterior.xy
+
+                ax.fill(
+                    x,
+                    y,
+                    color="red",
                     alpha=0.5,
                 )
-                ax.add_patch(rect)
+                ax.plot(x, y, color="black", linewidth=1)
 
                 # Add label
+                centroid = polygon.centroid
                 ax.text(
-                    offset_x + pattern.width / 2,
-                    offset_y + pattern.height / 2,
+                    centroid.x + offset_x,
+                    centroid.y + offset_y,
                     f"{pattern.name}\n(failed)",
                     ha="center",
                     va="center",
-                    color="red",
+                    color="white",
                     fontsize=VISUALIZATION["FONT_SIZE"] - 2,
                 )
 

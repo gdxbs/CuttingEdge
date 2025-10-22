@@ -1,0 +1,51 @@
+PATTERN FITTING REPORT
+============================================================
+
+Generated: 2025-10-21 22:21:31
+
+CLOTH INFORMATION
+------------------------------------------------------------
+Type: wool
+Dimensions: 200.0 x 300.0 cm
+Total Area: 60000.0 cm²
+Usable Area: 55100.0 cm²
+Defects: 0
+
+FITTING SUMMARY
+------------------------------------------------------------
+Total Patterns: 3
+Patterns Placed: 3
+Success Rate: 100.0%
+Material Utilization: 0.6%
+Total Pattern Area: 342.0 cm²
+Waste Area: 54758.0 cm²
+
+PLACEMENT DETAILS
+------------------------------------------------------------
+
+Pattern 1: rand_G3D5J95AIO_pattern
+  Type: sleeve
+  Size: 18.2 x 69.0 cm
+  Area: 149.3 cm²
+  Position: (0.0, 0.0) cm
+  Rotation: 90°
+  Flipped: No
+  Placement Score: 1.75
+
+Pattern 2: pattern_60x90
+  Type: sleeve
+  Size: 60.0 x 90.0 cm
+  Area: 149.3 cm²
+  Position: (0.0, 180.0) cm
+  Rotation: 90°
+  Flipped: No
+  Placement Score: 8.38
+
+Pattern 3: rand_R4XBJY4GFM_pattern
+  Type: dress
+  Size: 27.5 x 139.7 cm
+  Area: 43.4 cm²
+  Position: (80.0, 0.0) cm
+  Rotation: 90°
+  Flipped: No
+  Placement Score: 9.33

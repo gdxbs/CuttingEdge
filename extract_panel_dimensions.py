@@ -44,17 +44,7 @@ try:
 except Exception:
     svgwrite = None  # type: ignore
 
-try:
-    from svglib import svglib  # type: ignore
-    from reportlab.graphics import renderPM  # type: ignore
-except Exception:
-    svglib = None  # type: ignore
-    renderPM = None  # type: ignore
 
-try:
-    import cairosvg  # type: ignore
-except Exception:
-    cairosvg = None  # type: ignore
 
 
 @dataclass
@@ -173,22 +163,7 @@ def draw_panel_svg(panel: Panel, out_svg: Path, scale_px_per_cm: float = 3.0, pa
     dwg.save(pretty=True)
 
 
-def svg_to_png(svg_path: Path, png_path: Path) -> bool:
-    # Prefer CairoSVG when available (robust on macOS/Linux). Fallback to svglib/reportlab.
-    if cairosvg is not None:
-        try:
-            cairosvg.svg2png(url=str(svg_path), write_to=str(png_path))
-            return True
-        except Exception:
-            pass
-    if svglib is not None and renderPM is not None:
-        try:
-            drawing = svglib.svg2rlg(str(svg_path))
-            renderPM.drawToFile(drawing, str(png_path), fmt="PNG")
-            return True
-        except Exception:
-            pass
-    return False
+
 
 
 def safe_mkdir(path: Path) -> None:
@@ -222,8 +197,7 @@ def process_dataset(
 ) -> None:
     if svgwrite is None:
         print("Warning: svgwrite not found. Please install svgwrite to enable rendering.")
-    if svglib is None or renderPM is None:
-        print("Info: svglib/reportlab not found. Will save SVGs instead of PNGs when conversion unavailable.")
+
 
     manifest_rows: List[List[str]] = []
 
@@ -261,32 +235,14 @@ def process_dataset(
                 safe_mkdir(panel_dir)
 
                 base_name = f"panel_{width_cm}x{height_cm}_{spec.datapoint_id}"
-                png_out = panel_dir / f"{base_name}.png"
+                svg_out = panel_dir / f"{base_name}.svg"
 
-                # Render SVG to a temporary path, convert to PNG, then delete SVG
-                import tempfile
-                with tempfile.NamedTemporaryFile(prefix="panel_", suffix=".svg", delete=False) as tmp_svg_file:
-                    tmp_svg_path = Path(tmp_svg_file.name)
                 try:
-                    draw_panel_svg(panel, tmp_svg_path)
+                    draw_panel_svg(panel, svg_out)
                 except Exception as e:
                     print(f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}")
-                    try:
-                        tmp_svg_path.unlink(missing_ok=True)  # type: ignore
-                    except Exception:
-                        pass
                     continue
-
-                # Convert to PNG (mandatory). If conversion fails, skip.
-                wrote_png = svg_to_png(tmp_svg_path, png_out)
-                try:
-                    tmp_svg_path.unlink(missing_ok=True)  # type: ignore
-                except Exception:
-                    pass
-                if not wrote_png:
-                    print("Skipping (PNG conversion unavailable or failed):", spec.datapoint_id, panel.name)
-                    continue
-                out_path = str(png_out)
+                out_path = str(svg_out)
 
                 manifest_rows.append([
                     spec.cloth_type,

@@ -3,12 +3,14 @@ Centralized configuration for the Cutting Edge pattern fitting system.
 All magic numbers and settings are defined here for easy modification.
 """
 
+import os
+
 # System settings
 SYSTEM = {
-    "BASE_DIR": "/Users/aryaminus/Developer/cutting-edge",
+    "BASE_DIR": os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
     "IMAGES_DIR": "images",
     "PATTERN_DIR_NAME": "shape",
-    "CLOTH_DIR_NAME": "cloth",
+    "CLOTH_DIR_NAME": "shape",
     "IMAGE_EXTENSIONS": ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"],
     "MODELS_DIR": "models",
     "OUTPUT_DIR": "output",
