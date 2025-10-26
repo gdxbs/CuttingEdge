@@ -1,24 +1,68 @@
 [
   {
-    "timestamp": "2025-09-06T16:47:41.662435",
+    "timestamp": "2025-10-21T22:21:31.499697",
     "patterns_total": 3,
-    "patterns_placed": 2,
-    "utilization_percentage": 0.3691923038062528,
-    "success_rate": 66.66666666666666,
-    "total_pattern_area": 161.71000000000004,
-    "waste_area": 43639.311400723265,
+    "patterns_placed": 3,
+    "utilization_percentage": 0.6206214609800362,
+    "success_rate": 100.0,
+    "total_pattern_area": 341.96242499999994,
+    "waste_area": 54758.037575,
     "cloth_dimensions": [
       200,
       300
     ],
-    "cloth_usable_area": 43801.021400723264,
-    "visualization_path": "/Users/aryaminus/Developer/cutting-edge/output/fitting_result_20250906_164740.png",
-    "cloth_analysis_path": "/Users/aryaminus/Developer/cutting-edge/output/cloth_analysis_20250906_164740.png",
+    "cloth_usable_area": 55100,
+    "visualization_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\fitting_result_20251021_222125.png",
+    "cloth_analysis_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\cloth_analysis_20251021_222125.png",
     "pattern_paths": [
-      "/Users/aryaminus/Developer/cutting-edge/images/shape/pattern_50x80.png",
-      "/Users/aryaminus/Developer/cutting-edge/images/shape/rand_0BD28UCVO8_pattern.png",
-      "/Users/aryaminus/Developer/cutting-edge/images/shape/pattern_30x40.png"
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\rand_G3D5J95AIO_pattern.png",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\pattern_60x90.png",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\rand_R4XBJY4GFM_pattern.png"
     ],
-    "cloth_path": "/Users/aryaminus/Developer/cutting-edge/images/cloth/generated_cloth_2.jpeg"
+    "cloth_path": "D:\\cuttingedgept2\\CuttingEdge\\images\\cloth\\generated_cloth_3.jpeg"
+  },
+  {
+    "timestamp": "2025-10-21T22:24:36.189445",
+    "patterns_total": 3,
+    "patterns_placed": 3,
+    "utilization_percentage": 0.6206214609800362,
+    "success_rate": 100.0,
+    "total_pattern_area": 341.96242499999994,
+    "waste_area": 54758.037575,
+    "cloth_dimensions": [
+      200,
+      300
+    ],
+    "cloth_usable_area": 55100,
+    "visualization_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\fitting_result_20251021_222435.png",
+    "cloth_analysis_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\cloth_analysis_20251021_222435.png",
+    "pattern_paths": [
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\rand_G3D5J95AIO_pattern.png",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\pattern_60x90.png",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\rand_R4XBJY4GFM_pattern.png"
+    ],
+    "cloth_path": "D:\\cuttingedgept2\\CuttingEdge\\images\\cloth\\generated_cloth_3.jpeg"
+  },
+  {
+    "timestamp": "2025-10-21T22:30:33.133726",
+    "patterns_total": 3,
+    "patterns_placed": 1,
+    "utilization_percentage": 9.222882713248639,
+    "success_rate": 33.33333333333333,
+    "total_pattern_area": 5081.808375,
+    "waste_area": 50018.191625,
+    "cloth_dimensions": [
+      200,
+      300
+    ],
+    "cloth_usable_area": 55100,
+    "visualization_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\fitting_result_20251021_223032.png",
+    "cloth_analysis_path": "D:\\cuttingedgept2\\CuttingEdge\\output\\cloth_analysis_20251021_223032.png",
+    "pattern_paths": [
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\generated_cloth_3.jpeg",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\generated_cloth_1.jpeg",
+      "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\generated_cloth_1.jpeg"
+    ],
+    "cloth_path": "D:\\cuttingedgept2\\CuttingEdge\\images\\shape\\generated_cloth_5.jpeg"
   }
 ]

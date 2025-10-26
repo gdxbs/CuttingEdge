@@ -3,12 +3,14 @@ Centralized configuration for the Cutting Edge pattern fitting system.
 All magic numbers and settings are defined here for easy modification.
 """
 
+import os
+
 # System settings
 SYSTEM = {
-    "BASE_DIR": "/Users/aryaminus/Developer/cutting-edge",
+    "BASE_DIR": os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
     "IMAGES_DIR": "images",
     "PATTERN_DIR_NAME": "shape",
-    "CLOTH_DIR_NAME": "cloth",
+    "CLOTH_DIR_NAME": "shape",
     "IMAGE_EXTENSIONS": ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"],
     "MODELS_DIR": "models",
     "OUTPUT_DIR": "output",
@@ -40,7 +42,7 @@ PATTERN = {
     "TYPES": ["shirt", "pants", "dress", "sleeve", "collar", "other"],
     # Image processing
     "IMAGE_SIZE": 256,  # Size to resize images to
-    "PIXEL_TO_CM": 0.1,  # Conversion factor for manual detection
+    "PIXEL_TO_CM": 0.105,  # Conversion factor for manual detection
     "CONTOUR_SIMPLIFICATION": 0.01,  # Contour simplification factor (% of perimeter)
     # CNN Architecture (feature extraction)
     "BACKBONE": "resnet18",  # Options: "simple", "resnet18", "efficientnet-b0"
@@ -74,7 +76,7 @@ CLOTH = {
     "PIXEL_TO_CM": 0.1,
     "EDGE_MARGIN": 5,  # Safety margin from edges (cm)
     # Segmentation
-    "USE_UNET": False,  # Whether to use U-Net or color-based segmentation
+    "USE_UNET": True,  # Whether to use U-Net or color-based segmentation
     # Color-based segmentation (HSV)
     "HSV_LOWER": [0, 0, 0],  # Lower bound for cloth detection
     "HSV_UPPER": [180, 255, 240],  # Upper bound for cloth detection
@@ -110,21 +112,22 @@ CLOTH = {
 # Pattern fitting settings
 FITTING = {
     # Placement optimization
-    "GRID_SIZE": 10,  # Grid divisions for placement search
-    "MAX_ATTEMPTS": 100,  # Max attempts to place a pattern
+    "GRID_SIZE": 5,  # Grid divisions for placement search
+    "MAX_ATTEMPTS": 200,  # Max attempts to place a pattern
     "ROTATION_ANGLES": [0, 90, 180, 270],  # Angles to try (degrees)
     "ALLOW_FLIPPING": True,  # Whether to try flipped patterns
     "MIN_PATTERN_COVERAGE": 0.95,  # Minimum pattern coverage by cloth (%)
     "OVERLAP_TOLERANCE": 0.01,  # Allowable overlap between patterns (%)
-    "GRID_SAMPLE_SIZE": 100,  # Max grid points to sample
+    "GRID_SAMPLE_SIZE": 200,  # Max grid points to sample
     "MIN_GAP_SIZE": 20,  # Minimum useful gap size (cm)
     # Rewards system
     "REWARDS": {
-        "overlap_penalty": -10,  # Penalty for overlapping patterns
-        "edge_bonus": 2,  # Bonus for placing near edges
-        "utilization_bonus": 5,  # Bonus for good material utilization
-        "compactness_bonus": 3,  # Bonus for placing patterns together
-        "gap_penalty": -1,  # Penalty for creating small gaps
+        "overlap_penalty": -20,  # Penalty for overlapping patterns
+        "edge_bonus": 5,  # Bonus for placing near edges
+        "utilization_bonus": 10,  # Bonus for good material utilization
+        "compactness_bonus": 7,  # Bonus for placing patterns together
+        "gap_penalty": -2,  # Penalty for creating small gaps
+        "origin_bonus": 3,  # Bonus for placing patterns near the origin
     },
     # Optimization level
     "USE_NEURAL_OPTIMIZER": True,  # Whether to use neural network or just grid search

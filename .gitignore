@@ -38,5 +38,6 @@ data/
 models/
 outputs/
 logs/
+images/
 
 .DS_Store

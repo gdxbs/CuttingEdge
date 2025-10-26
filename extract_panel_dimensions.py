@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""
+Extract per-panel 2D dimensions from dataset pattern specifications and
+export single-panel images organized by the requested folder structure.
+
+Output structure:
+  images/cloth/<cloth_type>/<panel_name>/panel_<WIDTH>x<HEIGHT>_<ID>.<ext>
+
+Where WIDTH and HEIGHT are in centimeters, rounded to nearest integer.
+
+Sampling:
+  By default, the script samples up to 10% of datapoints per cloth-type
+  folder, capped at 100 and floored at 10 (if available). You can override
+  via CLI flags.
+
+Usage examples:
+  python "utility scripts/extract_panel_dimensions.py" \
+    --data-root ./data \
+    --output-root ./images/cloth
+
+  python "utility scripts/extract_panel_dimensions.py" \
+    --data-root ./data \
+    --output-root ./images/cloth \
+    --per-cloth-max 50 --sample-fraction 0.05 --seed 42
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import os
+import random
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+
+# Optional dependencies for PNG conversion from SVG
+try:
+    import svgwrite  # type: ignore
+except Exception:
+    svgwrite = None  # type: ignore
+
+
+
+
+@dataclass
+class Panel:
+    name: str
+    vertices: List[List[float]]  # list of [x, y]
+    edges: List[Dict]
+
+    @property
+    def bbox(self) -> Tuple[float, float, float, float]:
+        xs = [v[0] for v in self.vertices]
+        ys = [v[1] for v in self.vertices]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    @property
+    def width_cm(self) -> float:
+        x0, _, x1, _ = self.bbox
+        return x1 - x0
+
+    @property
+    def height_cm(self) -> float:
+        _, y0, _, y1 = self.bbox
+        return y1 - y0
+
+
+@dataclass
+class Spec:
+    datapoint_id: str
+    cloth_type: str
+    panels: List[Panel]
+
+
+def read_spec(spec_path: Path, cloth_type: str) -> Spec:
+    with spec_path.open("r") as f:
+        spec = json.load(f)
+
+    pattern = spec["pattern"]
+    datapoint_id = Path(spec_path).parent.name
+    panels: List[Panel] = []
+    for panel_name, panel_data in pattern["panels"].items():
+        panels.append(
+            Panel(
+                name=panel_name,
+                vertices=panel_data["vertices"],
+                edges=panel_data["edges"],
+            )
+        )
+
+    return Spec(datapoint_id=datapoint_id, cloth_type=cloth_type, panels=panels)
+
+
+def _control_to_abs_coord(start: Tuple[float, float], end: Tuple[float, float], control_scale: List[float]) -> Tuple[float, float]:
+    """
+    Convert relative curvature control point [u, v] to absolute coordinates.
+    Matches logic in packages/pattern/core.py::_control_to_abs_coord, adapted for 2D.
+    start, end are 2D points; control_scale = [t, k] where t along edge, k along edge-perpendicular.
+    """
+    sx, sy = start
+    ex, ey = end
+    edge_x = ex - sx
+    edge_y = ey - sy
+    # perpendicular vector
+    edge_perp_x = -edge_y
+    edge_perp_y = edge_x
+
+    control_start_x = sx + control_scale[0] * edge_x
+    control_start_y = sy + control_scale[0] * edge_y
+    control_x = control_start_x + control_scale[1] * edge_perp_x
+    control_y = control_start_y + control_scale[1] * edge_perp_y
+    return (control_x, control_y)
+
+
+def draw_panel_svg(panel: Panel, out_svg: Path, scale_px_per_cm: float = 3.0, padding_px: int = 40) -> None:
+    if svgwrite is None:
+        raise RuntimeError("svgwrite is not installed; cannot render SVG")
+
+    # Convert vertices to a local coordinate system for drawing: flip Y down for image coordinates
+    # and translate to (0,0) based on bbox, then scale from cm to pixels.
+    x0, y0, x1, y1 = panel.bbox
+    width_px = int(math.ceil((x1 - x0) * scale_px_per_cm)) + 2 * padding_px
+    height_px = int(math.ceil((y1 - y0) * scale_px_per_cm)) + 2 * padding_px
+
+    dwg = svgwrite.Drawing(str(out_svg), profile="full", size=(f"{width_px}px", f"{height_px}px"))
+
+    def to_px(pt: Tuple[float, float]) -> Tuple[float, float]:
+        # shift to bbox origin, flip Y for SVG downward axis, apply padding and scale
+        x = (pt[0] - x0) * scale_px_per_cm + padding_px
+        y = (y1 - pt[1]) * scale_px_per_cm + padding_px  # invert Y
+        return (x, y)
+
+    # Build a path from edges in given order; assumes a closed loop
+    verts = panel.vertices
+    edges = panel.edges
+    if not edges:
+        return
+
+    # Start point: first edge's first vertex
+    start_idx = edges[0]["endpoints"][0]
+    start = to_px((verts[start_idx][0], verts[start_idx][1]))
+    path_cmds: List = ["M", start[0], start[1]]
+
+    for edge in edges:
+        s_idx, e_idx = edge["endpoints"]
+        e = to_px((verts[e_idx][0], verts[e_idx][1]))
+        if "curvature" in edge:
+            # Quadratic Bezier control point in absolute (computed from relative control)
+            control_abs = _control_to_abs_coord((verts[s_idx][0], verts[s_idx][1]), (verts[e_idx][0], verts[e_idx][1]), edge["curvature"])  # type: ignore
+            c = to_px(control_abs)
+            path_cmds += ["Q", c[0], c[1], e[0], e[1]]
+        else:
+            path_cmds += ["L", e[0], e[1]]
+
+    path_cmds.append("z")
+    path = dwg.path(path_cmds, stroke="black", fill="rgb(255,217,194)")
+    dwg.add(path)
+    dwg.save(pretty=True)
+
+
+
+
+
+def safe_mkdir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def choose_samples(items: List[Path], fraction: float, per_cloth_max: int, per_cloth_min: int, seed: Optional[int]) -> List[Path]:
+    if not items:
+        return []
+    n = len(items)
+    k = int(max(per_cloth_min, min(per_cloth_max, math.ceil(fraction * n))))
+    rng = random.Random(seed)
+    return rng.sample(items, k=min(k, n))
+
+
+def infer_cloth_type(cloth_folder_name: str) -> str:
+    # Strip trailing _<digits> if present, otherwise return the name
+    parts = cloth_folder_name.split("_")
+    if parts and parts[-1].isdigit():
+        return "_".join(parts[:-1])
+    return cloth_folder_name
+
+
+def process_dataset(
+    data_root: Path,
+    output_root: Path,
+    sample_fraction: float,
+    per_cloth_max: int,
+    per_cloth_min: int,
+    seed: Optional[int],
+) -> None:
+    if svgwrite is None:
+        print("Warning: svgwrite not found. Please install svgwrite to enable rendering.")
+
+
+    manifest_rows: List[List[str]] = []
+
+    for cloth_dir in sorted([p for p in data_root.iterdir() if p.is_dir()]):
+        cloth_type = infer_cloth_type(cloth_dir.name)
+
+        # Datapoint folders (immediate children)
+        datapoints = [p for p in cloth_dir.iterdir() if p.is_dir()]
+        if not datapoints:
+            continue
+
+        samples = choose_samples(datapoints, sample_fraction, per_cloth_max, per_cloth_min, seed)
+        if not samples:
+            continue
+
+        print(f"Processing {len(samples)}/{len(datapoints)} samples from {cloth_dir.name} (cloth={cloth_type})")
+
+        for dp in samples:
+            spec_path = dp / "specification.json"
+            if not spec_path.exists():
+                continue
+            try:
+                spec = read_spec(spec_path, cloth_type)
+            except Exception as e:
+                print(f"Failed to parse {spec_path}: {e}")
+                continue
+
+            for panel in spec.panels:
+                # Compute integer cm dimensions
+                width_cm = max(0, int(round(panel.width_cm)))
+                height_cm = max(0, int(round(panel.height_cm)))
+
+                # Output directory and filenames
+                panel_dir = output_root / cloth_type / panel.name
+                safe_mkdir(panel_dir)
+
+                base_name = f"panel_{width_cm}x{height_cm}_{spec.datapoint_id}"
+                svg_out = panel_dir / f"{base_name}.svg"
+
+                try:
+                    draw_panel_svg(panel, svg_out)
+                except Exception as e:
+                    print(f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}")
+                    continue
+                out_path = str(svg_out)
+
+                manifest_rows.append([
+                    spec.cloth_type,
+                    spec.datapoint_id,
+                    panel.name,
+                    str(width_cm),
+                    str(height_cm),
+                    str(spec_path),
+                    out_path,
+                ])
+
+    # Write manifest CSV
+    if manifest_rows:
+        safe_mkdir(output_root)
+        manifest_path = output_root / "panel_dimensions_manifest.csv"
+        with manifest_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["cloth_type", "datapoint_id", "panel", "width_cm", "height_cm", "source_spec", "output_path"])
+            writer.writerows(manifest_rows)
+        print(f"Saved manifest: {manifest_path}")
+    else:
+        print("No panels processed. Check your data path or sampling settings.")
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Extract per-panel dimensions and export single-panel images")
+    parser.add_argument("--data-root", type=Path, default=Path("./data"), help="Root folder that contains cloth-type dataset folders")
+    parser.add_argument("--output-root", type=Path, default=Path("./images/cloth"), help="Root output folder for images and manifest")
+    parser.add_argument("--sample-fraction", type=float, default=0.10, help="Fraction of datapoints to sample per cloth-type (0..1)")
+    parser.add_argument("--per-cloth-max", type=int, default=100, help="Maximum datapoints per cloth-type")
+    parser.add_argument("--per-cloth-min", type=int, default=10, help="Minimum datapoints per cloth-type (if available)")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible sampling")
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
+
+    data_root = args.data_root.resolve()
+    output_root = args.output_root.resolve()
+
+    if not data_root.exists():
+        print(f"Data root not found: {data_root}")
+        sys.exit(1)
+
+    process_dataset(
+        data_root=data_root,
+        output_root=output_root,
+        sample_fraction=args.sample_fraction,
+        per_cloth_max=args.per_cloth_max,
+        per_cloth_min=args.per_cloth_min,
+        seed=args.seed,
+    )
+
+
+if __name__ == "__main__":
+    main()
