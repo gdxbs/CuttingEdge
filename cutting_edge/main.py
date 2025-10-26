@@ -270,23 +270,37 @@ class CuttingEdgeSystem:
         train_samples = []
         val_samples = []
 
+        # Handle different data structures
+        train_cloth = split_data.get("train", {}).get(
+            "cloth", split_data.get("cloth_train", [])
+        )
+        train_pattern = split_data.get("train", {}).get(
+            "pattern", split_data.get("pattern_train", [])
+        )
+        val_cloth = split_data.get("val", {}).get(
+            "cloth", split_data.get("cloth_test", [])[:5]
+        )
+        val_pattern = split_data.get("val", {}).get(
+            "pattern", split_data.get("pattern_test", [])
+        )[:10]
+
         # Create training samples (combinations of patterns and cloths)
-        for cloth_file in split_data["train"]["cloth"][:20]:  # Limit for demo
+        for cloth_file in train_cloth[:20]:  # Limit for demo
             # Select random patterns for this cloth
             num_patterns = random.randint(2, 5)
             selected_patterns = random.sample(
-                split_data["train"]["pattern"],
-                min(num_patterns, len(split_data["train"]["pattern"])),
+                train_pattern,
+                min(num_patterns, len(train_pattern)),
             )
 
             train_samples.append({"patterns": selected_patterns, "cloth": cloth_file})
 
         # Create validation samples
-        for cloth_file in split_data["val"]["cloth"][:5]:
+        for cloth_file in val_cloth[:5]:
             num_patterns = random.randint(2, 5)
             selected_patterns = random.sample(
-                split_data["val"]["pattern"],
-                min(num_patterns, len(split_data["val"]["pattern"])),
+                val_pattern,
+                min(num_patterns, len(val_pattern)),
             )
 
             val_samples.append({"patterns": selected_patterns, "cloth": cloth_file})
@@ -395,11 +409,19 @@ class CuttingEdgeSystem:
         # Evaluate on test set
         test_results = []
 
-        for cloth_file in split_data["test"]["cloth"][:10]:  # Limit for demo
+        # Handle different data structures
+        test_cloth = split_data.get("test", {}).get(
+            "cloth", split_data.get("cloth_test", [])
+        )
+        test_pattern = split_data.get("test", {}).get(
+            "pattern", split_data.get("pattern_test", [])
+        )
+
+        for cloth_file in test_cloth[:10]:  # Limit for demo
             num_patterns = random.randint(2, 5)
             selected_patterns = random.sample(
-                split_data["test"]["pattern"],
-                min(num_patterns, len(split_data["test"]["pattern"])),
+                test_pattern,
+                min(num_patterns, len(test_pattern)),
             )
 
             patterns = [self.pattern_module.process_image(p) for p in selected_patterns]
@@ -578,9 +600,9 @@ def main():
     # Mode selection
     parser.add_argument(
         "--mode",
-        choices=["demo", "train", "fit"],
+        choices=["demo", "train", "eval", "fit"],
         default="demo",
-        help="Operation mode: demo, train, or fit",
+        help="Operation mode: demo, train, eval, or fit",
     )
 
     # Pattern and cloth selection
@@ -626,9 +648,11 @@ def main():
 
     elif args.mode == "train":
         # Training mode
-        pattern_files, cloth_files = system.scan_images()
-        split_data = system.load_or_create_split(pattern_files, cloth_files)
-        system.run_training(split_data)
+        system.run_training(args.epochs)
+
+    elif args.mode == "eval":
+        # Evaluation mode
+        system.run_evaluation()
 
     elif args.mode == "fit":
         # Fitting mode
