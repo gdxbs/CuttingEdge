@@ -9,9 +9,9 @@ import os
 SYSTEM = {
     "BASE_DIR": os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
     "IMAGES_DIR": "images",
-    "PATTERN_DIR_NAME": "shape",
-    "CLOTH_DIR_NAME": "shape",
-    "IMAGE_EXTENSIONS": ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"],
+    "PATTERN_DIR_NAME": "shape",  # Garment patterns to be fitted
+    "CLOTH_DIR_NAME": "cloth",  # Cloth materials to fit onto
+    "IMAGE_EXTENSIONS": ["png", "jpg", "jpeg", "svg", "PNG", "JPG", "JPEG", "SVG"],
     "MODELS_DIR": "models",
     "OUTPUT_DIR": "output",
     "DATA_DIR": "data",
