@@ -55,6 +55,7 @@ import math
 import os
 import random
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -211,7 +212,6 @@ def svg_to_png(svg_path: Path, png_path: Path) -> bool:
     Prefers CairoSVG (robust on macOS/Linux), falls back to svglib/reportlab.
     Returns True if conversion succeeded, False otherwise.
     """
-    # Prefer CairoSVG when available (robust on macOS/Linux). Fallback to svglib/reportlab.
     if cairosvg is not None:
         try:
             cairosvg.svg2png(url=str(svg_path), write_to=str(png_path))
@@ -271,7 +271,7 @@ def process_dataset(
         return
 
     if output_format == "png":
-        if svglib is None and renderPM is None and cairosvg is None:
+        if cairosvg is None and (svglib is None or renderPM is None):
             print(
                 "Error: PNG format requested but no conversion library available. "
                 "Please install cairosvg or svglib+reportlab."
@@ -321,8 +321,6 @@ def process_dataset(
 
                 if output_format == "png":
                     # Render SVG to a temporary path, convert to PNG, then delete SVG
-                    import tempfile
-
                     with tempfile.NamedTemporaryFile(
                         prefix="panel_", suffix=".svg", delete=False
                     ) as tmp_svg_file:
