@@ -39,11 +39,23 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-# Optional dependencies for PNG conversion from SVG
+# Optional dependencies for SVG rendering and PNG conversion
 try:
     import svgwrite  # type: ignore
 except Exception:
     svgwrite = None  # type: ignore
+
+try:
+    from svglib import svglib  # type: ignore
+    from reportlab.graphics import renderPM  # type: ignore
+except Exception:
+    svglib = None  # type: ignore
+    renderPM = None  # type: ignore
+
+try:
+    import cairosvg  # type: ignore
+except Exception:
+    cairosvg = None  # type: ignore
 
 
 @dataclass
@@ -172,6 +184,29 @@ def draw_panel_svg(
     dwg.save(pretty=True)
 
 
+def svg_to_png(svg_path: Path, png_path: Path) -> bool:
+    """
+    Convert SVG to PNG using available libraries.
+    Prefers CairoSVG (robust on macOS/Linux), falls back to svglib/reportlab.
+    Returns True if conversion succeeded, False otherwise.
+    """
+    # Prefer CairoSVG when available (robust on macOS/Linux). Fallback to svglib/reportlab.
+    if cairosvg is not None:
+        try:
+            cairosvg.svg2png(url=str(svg_path), write_to=str(png_path))
+            return True
+        except Exception:
+            pass
+    if svglib is not None and renderPM is not None:
+        try:
+            drawing = svglib.svg2rlg(str(svg_path))
+            renderPM.drawToFile(drawing, str(png_path), fmt="PNG")
+            return True
+        except Exception:
+            pass
+    return False
+
+
 def safe_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -206,11 +241,21 @@ def process_dataset(
     per_garment_max: int,
     per_garment_min: int,
     seed: Optional[int],
+    output_format: str = "svg",
 ) -> None:
     if svgwrite is None:
         print(
             "Warning: svgwrite not found. Please install svgwrite to enable rendering."
         )
+        return
+
+    if output_format == "png":
+        if svglib is None and renderPM is None and cairosvg is None:
+            print(
+                "Error: PNG format requested but no conversion library available. "
+                "Please install cairosvg or svglib+reportlab."
+            )
+            return
 
     manifest_rows: List[List[str]] = []
 
@@ -252,16 +297,51 @@ def process_dataset(
                 safe_mkdir(panel_dir)
 
                 base_name = f"panel_{width_cm}x{height_cm}_{spec.datapoint_id}"
-                svg_out = panel_dir / f"{base_name}.svg"
 
-                try:
-                    draw_panel_svg(panel, svg_out)
-                except Exception as e:
-                    print(
-                        f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}"
-                    )
-                    continue
-                out_path = str(svg_out)
+                if output_format == "png":
+                    # Render SVG to a temporary path, convert to PNG, then delete SVG
+                    import tempfile
+
+                    with tempfile.NamedTemporaryFile(
+                        prefix="panel_", suffix=".svg", delete=False
+                    ) as tmp_svg_file:
+                        tmp_svg_path = Path(tmp_svg_file.name)
+                    try:
+                        draw_panel_svg(panel, tmp_svg_path)
+                    except Exception as e:
+                        print(
+                            f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}"
+                        )
+                        try:
+                            tmp_svg_path.unlink(missing_ok=True)  # type: ignore
+                        except Exception:
+                            pass
+                        continue
+
+                    # Convert to PNG
+                    png_out = panel_dir / f"{base_name}.png"
+                    wrote_png = svg_to_png(tmp_svg_path, png_out)
+                    try:
+                        tmp_svg_path.unlink(missing_ok=True)  # type: ignore
+                    except Exception:
+                        pass
+                    if not wrote_png:
+                        print(
+                            f"Skipping (PNG conversion unavailable or failed): {spec.datapoint_id} {panel.name}"
+                        )
+                        continue
+                    out_path = str(png_out)
+
+                else:  # svg format
+                    svg_out = panel_dir / f"{base_name}.svg"
+                    try:
+                        draw_panel_svg(panel, svg_out)
+                    except Exception as e:
+                        print(
+                            f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}"
+                        )
+                        continue
+                    out_path = str(svg_out)
 
                 manifest_rows.append(
                     [
@@ -335,6 +415,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed", type=int, default=None, help="Random seed for reproducible sampling"
     )
+    parser.add_argument(
+        "--format",
+        type=str,
+        default="svg",
+        choices=["svg", "png"],
+        help="Output image format: svg or png (default: svg)",
+    )
     return parser.parse_args(argv)
 
 
@@ -355,6 +442,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         per_garment_max=args.per_garment_max,
         per_garment_min=args.per_garment_min,
         seed=args.seed,
+        output_format=args.format,
     )
 
 
