@@ -332,7 +332,7 @@ def process_dataset(
                             f"Failed to render SVG for {spec.datapoint_id}:{panel.name}: {e}"
                         )
                         try:
-                            tmp_svg_path.unlink(missing_ok=True)  # type: ignore
+                            tmp_svg_path.unlink(missing_ok=True)  # type: ignore[call-arg]
                         except Exception:
                             pass
                         continue
@@ -341,7 +341,7 @@ def process_dataset(
                     png_out = panel_dir / f"{base_name}.png"
                     wrote_png = svg_to_png(tmp_svg_path, png_out)
                     try:
-                        tmp_svg_path.unlink(missing_ok=True)  # type: ignore
+                        tmp_svg_path.unlink(missing_ok=True)  # type: ignore[call-arg]
                     except Exception:
                         pass
                     if not wrote_png:
