@@ -74,6 +74,33 @@ uv pip install -e ".[dev]"
 
 ## Usage
 
+### Extracting Panel Dimensions
+
+Before running pattern fitting, you may want to extract panel dimensions from your dataset. The `extract_panel_dimensions.py` script processes garment pattern specifications and generates individual panel images.
+
+```bash
+# Generate SVG panels (default, vector format)
+python extract_panel_dimensions.py \
+    --data-root ./data \
+    --output-root ./images/shape \
+    --format svg
+
+# Generate PNG panels (raster format, useful for computer vision)
+python extract_panel_dimensions.py \
+    --data-root ./data \
+    --output-root ./images/shape \
+    --format png
+
+# Note: PNG format requires cairosvg or svglib+reportlab libraries
+# Install with: pip install cairosvg
+```
+
+The script creates an organized directory structure:
+- `images/shape/<garment_type>/<panel_name>/panel_<WIDTH>x<HEIGHT>_<ID>.<ext>`
+- A manifest CSV file with all panel metadata
+
+### Running the Pattern Fitting System
+
 The system can be run in several modes via `src/cutting_edge/main.py`.
 
 ### Demo Mode (Recommended)

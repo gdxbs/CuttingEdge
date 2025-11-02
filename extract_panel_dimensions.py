@@ -9,20 +9,41 @@ Output structure:
 Where WIDTH and HEIGHT are in centimeters, rounded to nearest integer.
 This creates garment pattern panels that will be fitted onto cloth materials.
 
+Output formats:
+  - SVG (default): Vector format, ideal for precise geometric operations
+  - PNG: Raster format, useful for computer vision and neural network processing
+
 Sampling:
-  By default, the script samples up to 10% of datapoints per cloth-type
+  By default, the script samples up to 10% of datapoints per garment-type
   folder, capped at 100 and floored at 10 (if available). You can override
   via CLI flags.
 
 Usage examples:
-  python "utility scripts/extract_panel_dimensions.py" \
+  # Generate SVG output (default)
+  python extract_panel_dimensions.py \
     --data-root ./data \
-    --output-root ./images/cloth
+    --output-root ./images/shape
 
-  python "utility scripts/extract_panel_dimensions.py" \
+  # Generate PNG output
+  python extract_panel_dimensions.py \
     --data-root ./data \
-    --output-root ./images/cloth \
-    --per-cloth-max 50 --sample-fraction 0.05 --seed 42
+    --output-root ./images/shape \
+    --format png
+
+  # Custom sampling parameters
+  python extract_panel_dimensions.py \
+    --data-root ./data \
+    --output-root ./images/shape \
+    --per-garment-max 50 --sample-fraction 0.05 --seed 42 \
+    --format svg
+
+Dependencies:
+  Required:
+    - svgwrite: For SVG generation
+  
+  Optional (for PNG conversion):
+    - cairosvg (preferred): Robust SVG to PNG conversion
+    - svglib + reportlab: Alternative SVG to PNG conversion
 """
 
 from __future__ import annotations
