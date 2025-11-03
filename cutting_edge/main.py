@@ -267,6 +267,24 @@ class CuttingEdgeSystem:
         # Split data for training/validation/test (70/15/15)
         split_data = self.load_or_create_split(pattern_files, cloth_files)
 
+        # Train the pattern recognition model first
+        logger.info("--- Training Pattern Recognition Model ---")
+        self.pattern_module.train(
+            train_images=split_data["pattern_train"],
+            val_images=split_data["pattern_test"],
+            epochs=epochs,
+            batch_size=batch_size,
+        )
+
+        # Train the cloth recognition model
+        logger.info("--- Training Cloth Recognition Model ---")
+        self.cloth_module.train(
+            train_images=split_data["cloth_train"],
+            val_images=split_data["cloth_test"],
+            epochs=epochs,
+            batch_size=batch_size,
+        )
+
         train_samples = []
         val_samples = []
 

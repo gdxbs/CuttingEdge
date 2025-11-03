@@ -701,10 +701,19 @@ class PatternFittingModule:
                 logger.info(f"  ✗ Failed to place {pattern.name}")
 
         # Calculate metrics
+        cloth_poly, _ = self.create_cloth_polygon(cloth)
+        placed_polygons = [p.placement_polygon for p in placed_patterns]
+
+        # Calculate true utilized area by intersecting placed patterns with cloth
+        utilized_area = 0
+        for poly in placed_polygons:
+            utilized_area += cloth_poly.intersection(poly).area
+
+        utilization = (utilized_area / cloth.usable_area) * 100 if cloth.usable_area > 0 else 0
+        success_rate = (len(placed_patterns) / len(patterns)) * 100 if patterns else 0
+        waste_area = cloth.usable_area - utilized_area
         total_pattern_area = sum(p.pattern.area for p in placed_patterns)
-        utilization = (total_pattern_area / cloth.usable_area) * 100
-        success_rate = (len(placed_patterns) / len(patterns)) * 100
-        waste_area = cloth.usable_area - total_pattern_area
+
 
         # Create result dictionary
         result = {
