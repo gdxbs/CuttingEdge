@@ -651,9 +651,10 @@ class CuttingEdgeSystem:
 
         logger.info(f"All results saved to {results_file}")
 
-    def run_all_cloths_max_patterns(self, max_patterns_per_cloth: int = 50):
+    def run_all_cloths_max_patterns(self, max_patterns_per_cloth: int = 20):
         """
         Process all cloth images and fit as many patterns as possible on each.
+        Ensures patterns are not repeated across different cloths.
         Shows only successfully placed patterns in visualizations.
         """
         logger.info("=== ALL CLOTHS - MAX PATTERNS MODE ===")
@@ -668,14 +669,26 @@ class CuttingEdgeSystem:
         logger.info(
             f"Processing {len(cloth_files)} cloth images with up to {max_patterns_per_cloth} patterns each"
         )
+        logger.info(f"Total available patterns: {len(pattern_files)}")
+
+        # Limit total patterns to process to avoid excessive runtime
+        max_total_patterns = min(
+            len(pattern_files), 800
+        )  # Process max 800 unique patterns to cover more cloths
+        logger.info(
+            f"Will process maximum {max_total_patterns} unique patterns across all cloths"
+        )
 
         # Load models once
         self.pattern_module.load_model()
         self.cloth_module.load_model()
         self.fitting_module.load_model()
 
-        # Process each cloth
+        # Track used patterns globally to avoid repetition
+        used_patterns = set()
         all_results = []
+
+        # Process each cloth
         for i, cloth_file in enumerate(cloth_files):
             logger.info(
                 f"\n--- Processing cloth {i + 1}/{len(cloth_files)}: {os.path.basename(cloth_file)} ---"
@@ -685,9 +698,31 @@ class CuttingEdgeSystem:
                 # Process cloth
                 cloth = self.process_cloth(cloth_file)
 
-                # Select patterns that might fit this cloth
+                # Filter out already used patterns
+                available_patterns = [
+                    p for p in pattern_files if p not in used_patterns
+                ]
+
+                # Also limit by total patterns processed
+                if len(used_patterns) >= max_total_patterns:
+                    logger.info(
+                        f"Reached maximum pattern limit ({max_total_patterns}). Stopping."
+                    )
+                    break
+
+                if not available_patterns:
+                    logger.warning(
+                        f"No more unused patterns available for {os.path.basename(cloth_file)}"
+                    )
+                    break
+
+                logger.info(
+                    f"Available patterns for this cloth: {len(available_patterns)}"
+                )
+
+                # Select patterns that might fit this cloth from available ones
                 suitable_patterns = self.select_patterns_for_cloth(
-                    pattern_files, cloth, max_patterns_per_cloth
+                    available_patterns, cloth, max_patterns_per_cloth
                 )
 
                 if not suitable_patterns:
@@ -710,6 +745,14 @@ class CuttingEdgeSystem:
                 # Perform fitting
                 result = self.fitting_module.fit_patterns(patterns, cloth)
 
+                # Mark used patterns (both attempted and successfully placed)
+                for pattern_file in suitable_patterns:
+                    used_patterns.add(pattern_file)
+
+                logger.info(
+                    f"Total patterns used so far: {len(used_patterns)}/{len(pattern_files)}"
+                )
+
                 # Generate visualization with only successful patterns
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 viz_path = (
@@ -719,12 +762,9 @@ class CuttingEdgeSystem:
 
                 # Get only successfully placed patterns for visualization
                 successful_patterns = []
-                for j, placed_pattern in enumerate(result.get("placed_patterns", [])):
-                    if placed_pattern.get("placed", False):
-                        # Find the corresponding pattern
-                        pattern_idx = placed_pattern.get("pattern_index", j)
-                        if pattern_idx < len(patterns):
-                            successful_patterns.append(patterns[pattern_idx])
+                for placed_pattern in result.get("placed_patterns", []):
+                    # placed_pattern is a PlacementResult object with a 'pattern' attribute
+                    successful_patterns.append(placed_pattern.pattern)
 
                 # Visualize only successful placements
                 if successful_patterns:
@@ -800,15 +840,29 @@ class CuttingEdgeSystem:
         """
         Select patterns that are likely to fit on the given cloth.
         Prioritizes smaller patterns first to maximize count.
+        Optimized to avoid processing all patterns.
         """
         # Get cloth dimensions
         cloth_width = cloth.width
         cloth_height = cloth.height
         cloth_area = cloth_width * cloth_height
 
+        # Limit the number of evaluate for performance
+        # Take a reasonable sample that still provides variety
+        sample_size = min(
+            len(pattern_files), max_patterns * 8
+        )  # Sample 8x what we need for efficiency
+
+        # Randomly sample patterns to evaluate (for variety and performance)
+        import random
+
+        sampled_patterns = random.sample(
+            pattern_files, min(sample_size, len(pattern_files))
+        )
+
         # Calculate pattern areas and sort by size (smallest first)
         pattern_info = []
-        for pattern_file in pattern_files:
+        for pattern_file in sampled_patterns:
             try:
                 filename = os.path.basename(pattern_file)
                 width, height = self.pattern_module.extract_dimensions_from_filename(
@@ -831,14 +885,59 @@ class CuttingEdgeSystem:
             except Exception:
                 continue
 
+        # If we don't have enough suitable patterns, try a larger sample
+        if len(pattern_info) < max_patterns and sample_size < len(pattern_files):
+            additional_sample_size = min(
+                len(pattern_files) - sample_size, max_patterns * 5
+            )
+            additional_patterns = [
+                p for p in pattern_files if p not in sampled_patterns
+            ]
+            additional_sampled = random.sample(
+                additional_patterns, additional_sample_size
+            )
+
+            for pattern_file in additional_sampled:
+                try:
+                    filename = os.path.basename(pattern_file)
+                    width, height = (
+                        self.pattern_module.extract_dimensions_from_filename(filename)
+                    )
+                    if width and height:
+                        pattern_area = width * height
+                        if pattern_area < cloth_area * 0.5:
+                            pattern_info.append(
+                                {
+                                    "file": pattern_file,
+                                    "area": pattern_area,
+                                    "width": width,
+                                    "height": height,
+                                }
+                            )
+                except Exception:
+                    continue
+
         # Sort by area (smallest first) to maximize count
         pattern_info.sort(key=lambda x: x["area"])
 
-        # Select patterns up to max_patterns
-        selected_patterns = [p["file"] for p in pattern_info[:max_patterns]]
+        # Add some variety: take 70% smallest, 30% random from remaining suitable patterns
+        num_small = min(int(max_patterns * 0.7), len(pattern_info))
+        num_random = min(max_patterns - num_small, len(pattern_info) - num_small)
+
+        selected_small = [p["file"] for p in pattern_info[:num_small]]
+
+        # Random selection from remaining patterns for variety
+        remaining_patterns = pattern_info[num_small:]
+        if remaining_patterns and num_random > 0:
+            random.shuffle(remaining_patterns)
+            selected_random = [p["file"] for p in remaining_patterns[:num_random]]
+        else:
+            selected_random = []
+
+        selected_patterns = selected_small + selected_random
 
         logger.info(
-            f"Selected {len(selected_patterns)} patterns (smallest first) for {cloth_width}x{cloth_height}cm cloth"
+            f"Selected {len(selected_patterns)} patterns ({num_small} smallest + {len(selected_random)} varied) from {len(sampled_patterns)} sampled for {cloth_width}x{cloth_height}cm cloth"
         )
         return selected_patterns
 

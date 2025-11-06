@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import cv2
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -736,9 +737,19 @@ class PatternFittingModule:
 
         # Calculate metrics
         total_pattern_area = sum(p.pattern.area for p in placed_patterns)
-        utilization = (total_pattern_area / cloth.usable_area) * 100
-        success_rate = (len(placed_patterns) / len(patterns)) * 100
-        waste_area = cloth.usable_area - total_pattern_area
+        utilization = (
+            (total_pattern_area / cloth.usable_area * 100)
+            if cloth.usable_area > 0
+            else 0.0
+        )
+        success_rate = (
+            (len(placed_patterns) / len(patterns)) * 100 if len(patterns) > 0 else 0.0
+        )
+        waste_area = (
+            cloth.usable_area - total_pattern_area
+            if cloth.usable_area > 0
+            else total_pattern_area
+        )
 
         # Create result dictionary
         result = {
@@ -842,13 +853,19 @@ class PatternFittingModule:
             pattern_poly = placement.placement_polygon
             x, y = pattern_poly.exterior.xy
 
-            # Create patch
+            # Create patch with unique label for each pattern
+            pattern_label = (
+                f"{placement.pattern.pattern_type}: {placement.pattern.name}"
+            )
+            if placement.flipped:
+                pattern_label += " (flipped)"
+
             ax.fill(
                 x,
                 y,
                 color=colors[i],
                 alpha=0.7,
-                label=f"{placement.pattern.pattern_type}" if i == 0 else "",
+                label=pattern_label,
             )
             ax.plot(x, y, color="black", linewidth=2)
 
@@ -887,8 +904,48 @@ class PatternFittingModule:
 
         # Add grid and legend
         ax.grid(alpha=0.3)
-        if placed_patterns:
-            ax.legend(loc="upper right", fontsize=10, framealpha=0.9)
+
+        # Create comprehensive legend
+        legend_elements = []
+
+        # Add cloth material
+        legend_elements.append(
+            mpatches.Rectangle(
+                (0, 0),
+                1,
+                1,
+                fc="lightblue",
+                alpha=0.4,
+                ec="navy",
+                linewidth=2,
+                label="Cloth material",
+            )
+        )
+
+        # Add defects if any exist
+        if defect_polys:
+            legend_elements.append(
+                mpatches.Rectangle(
+                    (0, 0),
+                    1,
+                    1,
+                    fc="red",
+                    alpha=0.7,
+                    ec="darkred",
+                    linewidth=2,
+                    hatch="xxx",
+                    label="Defects (avoided)",
+                )
+            )
+
+        if legend_elements:
+            ax.legend(
+                handles=legend_elements,
+                loc="upper right",
+                fontsize=8,
+                framealpha=0.9,
+                bbox_to_anchor=(1.0, 1.0),
+            )
         else:
             # No patterns placed, just show cloth
             ax.text(
