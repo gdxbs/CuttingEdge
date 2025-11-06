@@ -5,8 +5,9 @@ Comprehensive test of both pattern and cloth shape extraction
 
 import cv2
 import numpy as np
-from cutting_edge.pattern_recognition_module import PatternRecognitionModule
+
 from cutting_edge.cloth_recognition_module import ClothRecognitionModule
+from cutting_edge.pattern_recognition_module import PatternRecognitionModule
 
 
 def test_comprehensive_shapes():
@@ -164,7 +165,7 @@ def test_comprehensive_shapes():
         print(f"  Total defects detected: {total_defects}")
 
     # Overall assessment
-    print(f"\n--- OVERALL ASSESSMENT ---")
+    print("\n--- OVERALL ASSESSMENT ---")
 
     pattern_success = len(valid_patterns) / len(test_patterns) * 100
     cloth_success = len(valid_cloths) / len(test_cloths) * 100

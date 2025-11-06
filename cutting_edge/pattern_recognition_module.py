@@ -244,7 +244,7 @@ class PatternRecognitionModule:
         # Check if image has alpha channel (transparency)
         if len(img.shape) == 3 and img.shape[2] == 4:
             # Use alpha channel for pattern shape extraction
-            logger.info(f"Using alpha channel for pattern shape extraction")
+            logger.info("Using alpha channel for pattern shape extraction")
             alpha = img[:, :, 3]
             gray = alpha
             # Alpha channel: 255 = opaque (pattern), 0 = transparent (background)
@@ -331,6 +331,13 @@ class PatternRecognitionModule:
             PATTERN["CONTOUR_SIMPLIFICATION"] * perimeter * 0.5
         )  # Reduce simplification
         simplified = cv2.approxPolyDP(main_contour, epsilon, True)
+
+        # Normalize contour to start at origin (0,0) for proper placement
+        if len(simplified) > 0:
+            min_x = np.min(simplified[:, :, 0])
+            min_y = np.min(simplified[:, :, 1])
+            simplified[:, :, 0] = simplified[:, :, 0] - min_x
+            simplified[:, :, 1] = simplified[:, :, 1] - min_y
 
         # Extract key points (corners or significant points)
         key_points: List[Tuple[float, float]] = []

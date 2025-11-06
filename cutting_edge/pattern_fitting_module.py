@@ -552,7 +552,25 @@ class PatternFittingModule:
                     flipped_options = [False, True] if self.allow_flipping else [False]
 
                     for flipped in flipped_options:
-                        positions_to_try.append((x, y, rotation, flipped))
+                        # Pre-check if pattern can fit at this position with this rotation
+                        # Create a test polygon to get actual rotated bounds
+                        test_poly = self.create_pattern_polygon(
+                            pattern, (0, 0), rotation, flipped
+                        )
+                        test_bounds = test_poly.bounds
+
+                        # Check if pattern fits within cloth bounds at this grid position
+                        # The pattern will be placed at (x, y), but its rotated bounds might extend beyond
+                        # We need to ensure the entire rotated pattern fits within the cloth
+                        fits = (
+                            x + test_bounds[2] <= cloth.width  # max_x fits
+                            and y + test_bounds[3] <= cloth.height  # max_y fits
+                            and x + test_bounds[0] >= 0  # min_x fits (should be >= 0)
+                            and y + test_bounds[1] >= 0  # min_y fits (should be >= 0)
+                        )
+
+                        if fits:
+                            positions_to_try.append((x, y, rotation, flipped))
 
         # Limit the number of positions to try
         if len(positions_to_try) > FITTING["GRID_SAMPLE_SIZE"]:

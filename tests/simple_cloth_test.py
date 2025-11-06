@@ -5,6 +5,7 @@ Simple test of cloth shape extraction
 
 import cv2
 import numpy as np
+
 from cutting_edge.cloth_recognition_module import ClothRecognitionModule
 
 

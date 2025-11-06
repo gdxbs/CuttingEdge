@@ -42,8 +42,11 @@ class ClothMaterial:
     total_area: float  # Total area in cm²
     usable_area: float  # Usable area in cm² (excluding defects and margins)
     contour: np.ndarray  # Cloth boundary points
-    defects: List[np.ndarray] = None  # Defect areas (holes, stains, etc.)
-    material_properties: Dict = None  # Additional properties (stretch, grain, etc.)
+    defects: Optional[List[np.ndarray]] = None  # Defect areas (holes, stains, etc.)
+    material_properties: Optional[Dict] = (
+        None  # Additional properties (stretch, grain, etc.)
+    )
+    filename: Optional[str] = None  # Original image filename
 
 
 class UNetSegmenter(nn.Module):
@@ -530,8 +533,9 @@ class ClothRecognitionModule:
             total_area=total_area,
             usable_area=usable_area,
             contour=contour,
-            defects=defects,
-            material_properties=material_properties,
+            defects=defects or [],
+            material_properties=material_properties or {},
+            filename=os.path.basename(image_path),
         )
 
         logger.info(f"Cloth detected: {cloth_type}, {width:.1f}x{height:.1f} cm")

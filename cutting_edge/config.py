@@ -173,7 +173,7 @@ CLOTH = {
 FITTING = {
     # Placement optimization
     # Grid size from [1] Jakobs (1996): 10x10 grid showed good results for initial placement
-    "GRID_SIZE": 10,  # Grid divisions for placement search [1]
+    "GRID_SIZE": 20,  # Grid divisions for placement search [1] - increased for precision
     # Max attempts from [3] Gomes & Oliveira (2006): 1000 iterations for simulated annealing
     "MAX_ATTEMPTS": 500,  # Balance between quality and speed
     # Rotation angles from [2] Bennell & Oliveira (2008): 0°, 90°, 180°, 270° for orthogonal,
@@ -182,10 +182,10 @@ FITTING = {
     "FREE_ROTATION_ANGLES": list(range(0, 360, 15)),  # For remnants/scraps [2]
     # From [5] Wong et al. (2003): Fabric grain direction restricts flipping in garment industry
     "ALLOW_FLIPPING": True,  # Depends on fabric type (False for directional prints) [5]
-    # From [4] Burke et al. (2007): 95% coverage threshold for valid placement
-    "MIN_PATTERN_COVERAGE": 0.95,  # Minimum pattern coverage by cloth [4]
-    # From [2] Bennell & Oliveira (2008): 1-2% overlap tolerance for numerical stability
-    "OVERLAP_TOLERANCE": 0.01,  # 1% allowable overlap between patterns [2]
+    # From [4] Burke et al. (2007): 100% coverage threshold for valid placement
+    "MIN_PATTERN_COVERAGE": 1.0,  # Pattern must be completely within cloth [4]
+    # From [2] Bennell & Oliveira (2008): Zero tolerance for overlaps in production
+    "OVERLAP_TOLERANCE": 0.0,  # 0% allowable overlap between patterns [2]
     # From [1] Jakobs (1996): Sampling 100-200 positions showed good results
     "GRID_SAMPLE_SIZE": 200,  # Max grid points to sample [1]
     # From garment industry standards: 2-5cm seam allowance
