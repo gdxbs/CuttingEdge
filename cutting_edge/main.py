@@ -11,6 +11,7 @@ This is the consolidated version that combines the best aspects of all previous 
 """
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from .cloth_recognition_module import ClothMaterial, ClothRecognitionModule
@@ -56,6 +58,13 @@ class CuttingEdgeSystem:
         for dir_path in [self.models_dir, self.output_dir, self.data_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
+        # Create logs directory
+        self.logs_dir = self.base_dir / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup file logging
+        self._setup_file_logging()
+
         # Initialize modules
         self.pattern_module = PatternRecognitionModule()
         self.cloth_module = ClothRecognitionModule()
@@ -63,6 +72,27 @@ class CuttingEdgeSystem:
 
         logger.info("Cutting Edge System initialized")
         logger.info(f"Base directory: {self.base_dir}")
+
+    def _setup_file_logging(self):
+        """Setup file logging with timestamps for research paper documentation."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = self.logs_dir / f"cutting_edge_{timestamp}.log"
+
+        # Create file handler
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+
+        # Create formatter with timestamps
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        file_handler.setFormatter(formatter)
+
+        # Add handler to root logger
+        logging.getLogger().addHandler(file_handler)
+
+        logger.info(f"Log file created: {log_file}")
 
     def select_suitable_cloth(
         self, pattern_files: List[str], cloth_files: List[str]
@@ -400,6 +430,303 @@ class CuttingEdgeSystem:
             self.fitting_module.max_attempts = config["max_attempts"]
         logger.info(f"Applied configuration: {config}")
 
+    def _save_evaluation_outputs(
+        self, test_results: List[Dict], test_samples: List[Dict]
+    ):
+        """Save comprehensive evaluation outputs for research paper."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create subdirectories
+        eval_charts_dir = os.path.join(self.output_dir, "evaluation_charts")
+        eval_logs_dir = os.path.join(self.output_dir, "evaluation_logs")
+        eval_images_dir = os.path.join(self.output_dir, "evaluation_images")
+        os.makedirs(eval_charts_dir, exist_ok=True)
+        os.makedirs(eval_logs_dir, exist_ok=True)
+        os.makedirs(eval_images_dir, exist_ok=True)
+
+        # Calculate summary statistics
+        if test_results:
+            avg_utilization = np.mean([r["utilization"] for r in test_results])
+            avg_success = np.mean([r["success_rate"] for r in test_results])
+            avg_waste = np.mean([r["waste_area"] for r in test_results])
+            avg_time = np.mean([r["processing_time"] for r in test_results])
+            total_placed = sum([r["patterns_placed"] for r in test_results])
+            total_attempted = sum([r["num_patterns"] for r in test_results])
+        else:
+            avg_utilization = avg_success = avg_waste = avg_time = 0
+            total_placed = total_attempted = 0
+
+        # Save JSON results
+        results_path = os.path.join(self.output_dir, "evaluation_results.json")
+        with open(results_path, "w") as f:
+            json.dump(
+                {
+                    "timestamp": timestamp,
+                    "summary": {
+                        "num_samples": len(test_results),
+                        "avg_utilization": float(avg_utilization),
+                        "avg_success_rate": float(avg_success),
+                        "avg_waste": float(avg_waste),
+                        "avg_time": float(avg_time),
+                        "total_placed": int(total_placed),
+                        "total_attempted": int(total_attempted),
+                    },
+                    "detailed_results": test_results,
+                },
+                f,
+                indent=2,
+            )
+        logger.info(f"Detailed results saved to {results_path}")
+
+        # Save CSV for Excel/LaTeX tables
+        csv_path = os.path.join(eval_logs_dir, f"evaluation_metrics_{timestamp}.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "Sample_ID",
+                    "Cloth_File",
+                    "Cloth_Type",
+                    "Cloth_Size_cm",
+                    "Num_Patterns",
+                    "Patterns_Placed",
+                    "Utilization_%",
+                    "Success_Rate_%",
+                    "Waste_Area_cm2",
+                    "Processing_Time_sec",
+                    "Visualization_File",
+                ]
+            )
+            for result in test_results:
+                writer.writerow(
+                    [
+                        result.get("sample_id", "N/A"),
+                        result["cloth_file"],
+                        result["cloth_type"],
+                        result["cloth_size"],
+                        result["num_patterns"],
+                        result["patterns_placed"],
+                        f"{result['utilization']:.2f}",
+                        f"{result['success_rate']:.2f}",
+                        f"{result['waste_area']:.2f}",
+                        f"{result['processing_time']:.3f}",
+                        result.get("visualization_file", "N/A"),
+                    ]
+                )
+        logger.info(f"Evaluation metrics CSV saved to {csv_path}")
+
+        # Save detailed text summary
+        summary_path = os.path.join(
+            eval_logs_dir, f"evaluation_summary_{timestamp}.txt"
+        )
+        with open(summary_path, "w") as f:
+            f.write("=" * 70 + "\n")
+            f.write("EVALUATION SUMMARY REPORT\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Samples evaluated: {len(test_results)}\n\n")
+            f.write("PERFORMANCE METRICS:\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"Average utilization: {avg_utilization:.2f}%\n")
+            f.write(f"Average success rate: {avg_success:.2f}%\n")
+            f.write(f"Average waste: {avg_waste:.2f} cm²\n")
+            f.write(f"Average processing time: {avg_time:.3f}s\n")
+            f.write(f"Total patterns placed: {total_placed}/{total_attempted}\n")
+            f.write(
+                f"Overall success rate: {(total_placed / total_attempted * 100) if total_attempted > 0 else 0:.2f}%\n\n"
+            )
+
+            # Detailed per-sample results
+            f.write("DETAILED RESULTS PER SAMPLE:\n")
+            f.write("-" * 70 + "\n")
+            for i, result in enumerate(test_results, 1):
+                f.write(f"\nSample {i}: {result['cloth_file']}\n")
+                f.write(f"  Cloth: {result['cloth_type']}, {result['cloth_size']}\n")
+                f.write(
+                    f"  Patterns: {result['patterns_placed']}/{result['num_patterns']} placed\n"
+                )
+                f.write(f"  Utilization: {result['utilization']:.2f}%\n")
+                f.write(f"  Waste: {result['waste_area']:.2f} cm²\n")
+                f.write(f"  Time: {result['processing_time']:.3f}s\n")
+        logger.info(f"Evaluation summary saved to {summary_path}")
+
+        # Generate visualization charts
+        self._generate_evaluation_charts(test_results, eval_charts_dir)
+        logger.info(f"Evaluation charts saved to {eval_charts_dir}/")
+
+    def _generate_evaluation_charts(self, test_results: List[Dict], charts_dir: str):
+        """Generate comprehensive visualization charts for evaluation results."""
+        if not test_results:
+            return
+
+        # Chart 1: Utilization distribution
+        plt.figure(figsize=(14, 10))
+
+        plt.subplot(2, 3, 1)
+        utilizations = [r["utilization"] for r in test_results]
+        plt.hist(utilizations, bins=15, alpha=0.7, color="steelblue", edgecolor="black")
+        mean_util = float(np.mean(utilizations))
+        plt.axvline(
+            mean_util,
+            color="r",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean_util:.1f}%",
+        )
+        plt.xlabel("Utilization (%)", fontsize=11)
+        plt.ylabel("Frequency", fontsize=11)
+        plt.title("Fabric Utilization Distribution", fontsize=12, fontweight="bold")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Chart 2: Success rate distribution
+        plt.subplot(2, 3, 2)
+        success_rates = [r["success_rate"] for r in test_results]
+        plt.hist(success_rates, bins=15, alpha=0.7, color="green", edgecolor="black")
+        mean_success = float(np.mean(success_rates))
+        plt.axvline(
+            mean_success,
+            color="r",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean_success:.1f}%",
+        )
+        plt.xlabel("Success Rate (%)", fontsize=11)
+        plt.ylabel("Frequency", fontsize=11)
+        plt.title("Pattern Placement Success Rate", fontsize=12, fontweight="bold")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Chart 3: Processing time distribution
+        plt.subplot(2, 3, 3)
+        times = [r["processing_time"] for r in test_results]
+        plt.hist(times, bins=15, alpha=0.7, color="coral", edgecolor="black")
+        mean_time = float(np.mean(times))
+        plt.axvline(
+            mean_time,
+            color="r",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean_time:.2f}s",
+        )
+        plt.xlabel("Processing Time (s)", fontsize=11)
+        plt.ylabel("Frequency", fontsize=11)
+        plt.title("Computational Efficiency", fontsize=12, fontweight="bold")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Chart 4: Utilization vs Number of Patterns
+        plt.subplot(2, 3, 4)
+        num_patterns = [r["num_patterns"] for r in test_results]
+        plt.scatter(
+            num_patterns,
+            utilizations,
+            alpha=0.6,
+            s=100,
+            c="steelblue",
+            edgecolors="black",
+        )
+        plt.xlabel("Number of Patterns", fontsize=11)
+        plt.ylabel("Utilization (%)", fontsize=11)
+        plt.title("Utilization vs Pattern Count", fontsize=12, fontweight="bold")
+        plt.grid(True, alpha=0.3)
+
+        # Chart 5: Waste area by cloth type
+        plt.subplot(2, 3, 5)
+        cloth_types = [r["cloth_type"] for r in test_results]
+        waste_areas = [r["waste_area"] for r in test_results]
+        unique_types = list(set(cloth_types))
+        type_waste = [
+            np.mean([waste_areas[i] for i, ct in enumerate(cloth_types) if ct == ut])
+            for ut in unique_types
+        ]
+        plt.bar(
+            unique_types, type_waste, alpha=0.7, color="indianred", edgecolor="black"
+        )
+        plt.xlabel("Cloth Type", fontsize=11)
+        plt.ylabel("Average Waste (cm²)", fontsize=11)
+        plt.title("Waste Area by Cloth Type", fontsize=12, fontweight="bold")
+        plt.xticks(rotation=45, ha="right")
+        plt.grid(True, axis="y", alpha=0.3)
+
+        # Chart 6: Sample-by-sample performance
+        plt.subplot(2, 3, 6)
+        sample_ids = list(range(1, len(test_results) + 1))
+        plt.plot(
+            sample_ids,
+            utilizations,
+            "o-",
+            label="Utilization",
+            linewidth=2,
+            markersize=6,
+        )
+        plt.plot(
+            sample_ids,
+            success_rates,
+            "s-",
+            label="Success Rate",
+            linewidth=2,
+            markersize=6,
+        )
+        plt.xlabel("Sample ID", fontsize=11)
+        plt.ylabel("Performance (%)", fontsize=11)
+        plt.title("Per-Sample Performance", fontsize=12, fontweight="bold")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(charts_dir, "evaluation_comprehensive.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+        # Create a summary performance chart
+        plt.figure(figsize=(10, 6))
+        metrics = ["Utilization\n(%)", "Success\nRate (%)", "Patterns\nPlaced (%)"]
+        values = [
+            np.mean(utilizations),
+            np.mean(success_rates),
+            (
+                sum([r["patterns_placed"] for r in test_results])
+                / sum([r["num_patterns"] for r in test_results])
+                * 100
+            ),
+        ]
+        colors = ["steelblue", "green", "coral"]
+        bars = plt.bar(
+            metrics, values, alpha=0.8, color=colors, edgecolor="black", linewidth=1.5
+        )
+
+        # Add value labels on bars
+        for bar, value in zip(bars, values):
+            height = bar.get_height()
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{value:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=12,
+                fontweight="bold",
+            )
+
+        plt.ylabel("Performance (%)", fontsize=13)
+        plt.title(
+            "Overall Evaluation Performance Summary", fontsize=14, fontweight="bold"
+        )
+        plt.ylim(0, 105)
+        plt.grid(True, axis="y", alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(charts_dir, "evaluation_summary.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
+
     def run_training(self, epochs: int = 10, batch_size: int = 15):
         """
         Run hyperparameter optimization for heuristic fitting algorithm.
@@ -578,9 +905,24 @@ class CuttingEdgeSystem:
 
             elapsed_time = time.time() - start_time
 
+            # Save visualization for this test case
+            eval_images_dir = os.path.join(self.output_dir, "evaluation_images")
+            os.makedirs(eval_images_dir, exist_ok=True)
+            viz_filename = f"test_sample_{i:03d}_{os.path.basename(sample['cloth']).split('.')[0]}.png"
+            viz_path = os.path.join(eval_images_dir, viz_filename)
+
+            try:
+                self.fitting_module.visualize(
+                    result, patterns, cloth, output_path=viz_path
+                )
+                logger.info(f"  Saved visualization to {viz_filename}")
+            except Exception as e:
+                logger.warning(f"  Could not save visualization: {e}")
+
             # Store detailed results
             test_results.append(
                 {
+                    "sample_id": i,
                     "cloth_file": os.path.basename(sample["cloth"]),
                     "cloth_type": cloth.cloth_type,
                     "cloth_size": f"{cloth.width:.1f}x{cloth.height:.1f}cm",
@@ -590,6 +932,7 @@ class CuttingEdgeSystem:
                     "success_rate": result["success_rate"],
                     "waste_area": result["waste_area"],
                     "processing_time": elapsed_time,
+                    "visualization_file": viz_filename,
                 }
             )
 
@@ -617,40 +960,8 @@ class CuttingEdgeSystem:
         logger.info(f"Total patterns placed: {total_placed}/{total_attempted}")
         logger.info("=" * 70)
 
-        # Save results
-        results_path = os.path.join(self.output_dir, "evaluation_results.json")
-        with open(results_path, "w") as f:
-            json.dump(
-                {
-                    "summary": {
-                        "num_samples": len(test_results),
-                        "avg_utilization": avg_utilization,
-                        "avg_success_rate": avg_success,
-                        "avg_waste": avg_waste,
-                        "avg_time": avg_time,
-                        "total_placed": total_placed,
-                        "total_attempted": total_attempted,
-                    },
-                    "detailed_results": test_results,
-                },
-                f,
-                indent=2,
-            )
-        logger.info(f"Detailed results saved to {results_path}")
-
-        # Create summary report
-        summary_path = os.path.join(self.output_dir, "evaluation_summary.txt")
-        with open(summary_path, "w") as f:
-            f.write("=" * 70 + "\n")
-            f.write("EVALUATION SUMMARY REPORT\n")
-            f.write("=" * 70 + "\n\n")
-            f.write(f"Samples evaluated: {len(test_results)}\n")
-            f.write(f"Average utilization: {avg_utilization:.1f}%\n")
-            f.write(f"Average success rate: {avg_success:.1f}%\n")
-            f.write(f"Average waste: {avg_waste:.1f} cm²\n")
-            f.write(f"Average processing time: {avg_time:.2f}s\n")
-            f.write(f"Total patterns placed: {total_placed}/{total_attempted}\n")
-        logger.info(f"Summary report saved to {summary_path}")
+        # Save comprehensive results for research paper
+        self._save_evaluation_outputs(test_results, test_samples)
 
         return test_results
 

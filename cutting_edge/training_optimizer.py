@@ -9,13 +9,16 @@ the heuristic pattern fitting algorithm, including:
 - Best configuration saving/loading
 """
 
+import csv
 import json
 import logging
 import os
 import time
+from datetime import datetime
 from itertools import product
 from typing import Dict, List, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -238,25 +241,74 @@ class HeuristicOptimizer:
         return ", ".join(formatted)
 
     def save_results(self, output_dir: str):
-        """Save optimization results to disk."""
-        # Save best config
+        """Save comprehensive optimization results for research paper."""
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create subdirectories
+        charts_dir = os.path.join(output_dir, "training_charts")
+        logs_dir = os.path.join(output_dir, "training_logs")
+        os.makedirs(charts_dir, exist_ok=True)
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # Save best config (JSON)
         config_path = os.path.join(output_dir, "best_config.json")
         with open(config_path, "w") as f:
             json.dump(self.best_config, f, indent=2)
         logger.info(f"Best config saved to {config_path}")
 
-        # Save full training history
+        # Save full training history (JSON)
         history_path = os.path.join(output_dir, "training_history.json")
         with open(history_path, "w") as f:
             json.dump(self.training_history, f, indent=2)
         logger.info(f"Training history saved to {history_path}")
 
-        # Save summary
-        summary_path = os.path.join(output_dir, "training_summary.txt")
+        # Save training metrics as CSV (for Excel/LaTeX tables)
+        csv_path = os.path.join(logs_dir, f"training_metrics_{timestamp}.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "Config_ID",
+                    "Grid_Size",
+                    "Rotation_Angles",
+                    "Allow_Flipping",
+                    "Max_Attempts",
+                    "Train_Utilization",
+                    "Train_Success_Rate",
+                    "Val_Utilization",
+                    "Val_Success_Rate",
+                    "Eval_Time_Sec",
+                ]
+            )
+            for result in self.training_history:
+                config = result["config"]
+                writer.writerow(
+                    [
+                        result["iteration"],
+                        config.get("grid_size", "N/A"),
+                        len(config.get("rotation_angles", [])),
+                        config.get("allow_flipping", "N/A"),
+                        config.get("max_attempts", "N/A"),
+                        f"{result['train_metrics']['utilization']:.2f}",
+                        f"{result['train_metrics']['success_rate']:.2f}",
+                        f"{result['val_metrics']['utilization']:.2f}",
+                        f"{result['val_metrics']['success_rate']:.2f}",
+                        f"{result['eval_time']:.2f}",
+                    ]
+                )
+        logger.info(f"Training metrics CSV saved to {csv_path}")
+
+        # Generate comparison charts
+        self._generate_training_charts(charts_dir)
+
+        # Save detailed text summary
+        summary_path = os.path.join(logs_dir, f"training_summary_{timestamp}.txt")
         with open(summary_path, "w") as f:
             f.write("=" * 70 + "\n")
             f.write("HYPERPARAMETER OPTIMIZATION SUMMARY\n")
-            f.write("=" * 70 + "\n\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Total configurations tested: {len(self.training_history)}\n")
             f.write(f"Best validation score: {self.best_score:.2f}\n\n")
             f.write("Best configuration:\n")
@@ -266,7 +318,7 @@ class HeuristicOptimizer:
             f.write("\n")
 
             # Top 5 configs
-            f.write("Top 5 Configurations:\n")
+            f.write("Top 5 Configurations (by validation utilization):\n")
             f.write("-" * 70 + "\n")
             sorted_history = sorted(
                 self.training_history,
@@ -275,11 +327,129 @@ class HeuristicOptimizer:
             )
             for i, result in enumerate(sorted_history[:5], 1):
                 f.write(
-                    f"\n{i}. Utilization: {result['val_metrics']['utilization']:.1f}%\n"
+                    f"\n{i}. Validation Utilization: {result['val_metrics']['utilization']:.1f}%\n"
+                )
+                f.write(
+                    f"   Validation Success Rate: {result['val_metrics']['success_rate']:.1f}%\n"
                 )
                 f.write(f"   Config: {self._format_config(result['config'])}\n")
+                f.write(f"   Eval Time: {result['eval_time']:.2f}s\n")
 
         logger.info(f"Training summary saved to {summary_path}")
+        logger.info(f"Training charts saved to {charts_dir}/")
+
+    def _generate_training_charts(self, charts_dir: str):
+        """Generate visualization charts for training results."""
+        if not self.training_history:
+            return
+
+        # Extract data
+        iterations = [r["iteration"] for r in self.training_history]
+        train_util = [r["train_metrics"]["utilization"] for r in self.training_history]
+        val_util = [r["val_metrics"]["utilization"] for r in self.training_history]
+        train_success = [
+            r["train_metrics"]["success_rate"] for r in self.training_history
+        ]
+        val_success = [r["val_metrics"]["success_rate"] for r in self.training_history]
+        eval_times = [r["eval_time"] for r in self.training_history]
+
+        # Chart 1: Utilization Comparison
+        plt.figure(figsize=(12, 6))
+        plt.subplot(1, 2, 1)
+        plt.plot(
+            iterations, train_util, "o-", label="Training", linewidth=2, markersize=8
+        )
+        plt.plot(
+            iterations, val_util, "s-", label="Validation", linewidth=2, markersize=8
+        )
+        plt.xlabel("Configuration #", fontsize=12)
+        plt.ylabel("Utilization (%)", fontsize=12)
+        plt.title(
+            "Fabric Utilization Across Configurations", fontsize=14, fontweight="bold"
+        )
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+
+        # Chart 2: Success Rate Comparison
+        plt.subplot(1, 2, 2)
+        plt.plot(
+            iterations, train_success, "o-", label="Training", linewidth=2, markersize=8
+        )
+        plt.plot(
+            iterations, val_success, "s-", label="Validation", linewidth=2, markersize=8
+        )
+        plt.xlabel("Configuration #", fontsize=12)
+        plt.ylabel("Success Rate (%)", fontsize=12)
+        plt.title("Pattern Placement Success Rate", fontsize=14, fontweight="bold")
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(charts_dir, "training_comparison.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+        # Chart 3: Bar chart of top configurations
+        sorted_history = sorted(
+            self.training_history,
+            key=lambda x: x["val_metrics"]["utilization"],
+            reverse=True,
+        )[:5]
+
+        plt.figure(figsize=(12, 6))
+        config_labels = [f"Config {r['iteration']}" for r in sorted_history]
+        util_values = [r["val_metrics"]["utilization"] for r in sorted_history]
+        success_values = [r["val_metrics"]["success_rate"] for r in sorted_history]
+
+        x = np.arange(len(config_labels))
+        width = 0.35
+
+        plt.bar(x - width / 2, util_values, width, label="Utilization %", alpha=0.8)
+        plt.bar(x + width / 2, success_values, width, label="Success Rate %", alpha=0.8)
+
+        plt.xlabel("Configuration", fontsize=12)
+        plt.ylabel("Performance (%)", fontsize=12)
+        plt.title("Top 5 Configurations Performance", fontsize=14, fontweight="bold")
+        plt.xticks(x, config_labels)
+        plt.legend(fontsize=11)
+        plt.grid(True, axis="y", alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(charts_dir, "top_configs_comparison.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+        # Chart 4: Evaluation time analysis
+        plt.figure(figsize=(10, 5))
+        plt.bar(iterations, eval_times, alpha=0.7, color="steelblue")
+        plt.xlabel("Configuration #", fontsize=12)
+        plt.ylabel("Evaluation Time (seconds)", fontsize=12)
+        plt.title(
+            "Computational Efficiency per Configuration", fontsize=14, fontweight="bold"
+        )
+        plt.grid(True, axis="y", alpha=0.3)
+        mean_time = float(np.mean(eval_times))
+        plt.axhline(
+            y=mean_time,
+            color="r",
+            linestyle="--",
+            label=f"Mean: {mean_time:.2f}s",
+        )
+        plt.legend(fontsize=11)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(charts_dir, "eval_time_analysis.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
 
     @staticmethod
     def load_best_config(config_path: str) -> Dict:
