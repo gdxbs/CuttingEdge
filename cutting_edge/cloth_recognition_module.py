@@ -17,6 +17,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
 
 from .config import CLOTH, SYSTEM
 
@@ -123,6 +126,30 @@ class UNetSegmenter(nn.Module):
         output = self.output(dec4)
 
         return output
+
+
+class ClothDataset(Dataset):
+    """Custom dataset for loading cloth images and masks."""
+
+    def __init__(self, image_paths: List[str], transforms):
+        self.image_paths = image_paths
+        self.transforms = transforms
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        img_path = self.image_paths[idx]
+        mask_path = img_path.replace("images", "masks").replace(".jpg", ".png")
+
+        img = Image.open(img_path).convert("RGB")
+        mask = Image.open(mask_path).convert("L")
+
+        if self.transforms:
+            img = self.transforms(img)
+            mask = self.transforms(mask)
+
+        return img, mask
 
 
 class ClothRecognitionModule:
@@ -623,28 +650,83 @@ Edge Margin: {CLOTH["EDGE_MARGIN"]} cm"""
             logger.error(f"Failed to load model: {e}")
             return False
 
-    def train(self, train_images: List[str], epochs: int = 10) -> Dict:
+    def train(
+        self,
+        train_images: List[str],
+        val_images: List[str],
+        epochs: int = 10,
+        batch_size: int = 4,
+    ) -> Dict:
         """Train the cloth segmentation model."""
-        if not self.use_unet or not hasattr(self, "model"):
-            logger.warning("No model to train (U-Net not enabled)")
-            return {"status": "skipped", "message": "U-Net not enabled"}
+        if not self.use_unet:
+            logger.info("U-Net is not enabled, skipping training for cloth recognition.")
+            return {}
 
         logger.info(
-            f"Training cloth segmentation model with {len(train_images)} images"
+            f"Training cloth recognition model with {len(train_images)} train images and {len(val_images)} validation images"
         )
 
-        # Training for cloth segmentation uses supervised learning
-        # with pixel-wise labels for segmentation
-        # Reference: Ronneberger et al. (2015) "U-Net: Convolutional Networks"
-        logger.info(
-            f"Training cloth segmentation model with {len(train_images)} images"
+        # Transforms for training and validation
+        transforms_set = transforms.Compose(
+            [
+                transforms.Resize((CLOTH["IMAGE_SIZE"], CLOTH["IMAGE_SIZE"])),
+                transforms.ToTensor(),
+            ]
         )
 
-        # Save current model state
-        self.save_model()
+        # Create datasets and dataloaders
+        train_dataset = ClothDataset(train_images, transforms=transforms_set)
+        val_dataset = ClothDataset(val_images, transforms=transforms_set)
 
-        return {
-            "status": "success",
-            "message": "Model checkpoint saved",
-            "epochs_completed": epochs,
-        }
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False
+        )
+
+        # Loss function and optimizer
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+
+        best_val_loss = float("inf")
+        history = {"train_loss": [], "val_loss": []}
+
+        for epoch in range(epochs):
+            self.model.train()
+            running_loss = 0.0
+            for images, masks in train_loader:
+                images, masks = images.to(self.device), masks.to(self.device)
+
+                optimizer.zero_grad()
+                outputs = self.model(images)
+                loss = criterion(outputs, masks)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+
+            train_loss = running_loss / len(train_loader)
+            history["train_loss"].append(train_loss)
+
+            # Validation
+            self.model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for images, masks in val_loader:
+                    images, masks = images.to(self.device), masks.to(self.device)
+                    outputs = self.model(images)
+                    loss = criterion(outputs, masks)
+                    val_loss += loss.item()
+
+            val_loss /= len(val_loader)
+            history["val_loss"].append(val_loss)
+
+            logger.info(
+                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                self.save_model()
+
+        return history

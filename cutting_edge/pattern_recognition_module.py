@@ -21,6 +21,10 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
+from torch.utils.data import Dataset
+from PIL import Image
+import cairosvg
+from io import BytesIO
 
 from .config import IMAGENET_NORMALIZE, PATTERN, SYSTEM
 
@@ -127,6 +131,52 @@ class PatternRecognizer(nn.Module):
         }
 
 
+class PatternDataset(Dataset):
+    """Custom dataset for loading pattern images."""
+
+    def __init__(
+        self, image_paths: List[str], transforms: transforms.Compose, pattern_types: List[str]
+    ):
+        self.image_paths = image_paths
+        self.transforms = transforms
+        self.pattern_types = pattern_types
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        img_path = self.image_paths[idx]
+        
+        if img_path.lower().endswith(".svg"):
+            png_data = cairosvg.svg2png(url=img_path)
+            img = Image.open(BytesIO(png_data)).convert("RGB")
+        else:
+            img = Image.open(img_path).convert("RGB")
+
+        # Extract label from path
+        label_str = "other"
+        for p_type in self.pattern_types:
+            if p_type in img_path:
+                label_str = p_type
+                break
+        label = self.pattern_types.index(label_str)
+
+        # Extract dimensions from filename
+        width, height = self._extract_dimensions_from_filename(os.path.basename(img_path))
+        dims = torch.tensor([width, height], dtype=torch.float32)
+
+        img_tensor = self.transforms(img)
+        return img_tensor, label, dims
+
+    def _extract_dimensions_from_filename(self, filename: str) -> Tuple[float, float]:
+        match = re.search(r"(\d+)x(\d+)", filename)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+
+        # Return default/standard dimensions if not in filename
+        return 20.0, 20.0
+
+
 class PatternRecognitionModule:
     """
     Main class for pattern recognition that handles:
@@ -152,10 +202,25 @@ class PatternRecognitionModule:
         self.model = PatternRecognizer()
         self.model.to(self.device)
 
-        # Image preprocessing transforms
-        self.transforms = transforms.Compose(
+        # Data augmentation and normalization for training
+        self.train_transforms = transforms.Compose(
             [
-                transforms.ToPILImage(),
+                transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(15),
+                transforms.ColorJitter(
+                    brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=IMAGENET_NORMALIZE["mean"], std=IMAGENET_NORMALIZE["std"]
+                ),
+            ]
+        )
+
+        # Normalization for validation/testing
+        self.val_transforms = transforms.Compose(
+            [
                 transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
                 transforms.ToTensor(),
                 transforms.Normalize(
@@ -394,7 +459,7 @@ class PatternRecognitionModule:
             from PIL import Image
 
             pil_img = Image.fromarray(img_rgb)
-            transformed = self.transforms(pil_img)
+            transformed = self.val_transforms(pil_img)
             if not isinstance(transformed, torch.Tensor):
                 transformed = torch.tensor(transformed)
             img_tensor = transformed.unsqueeze(0).to(self.device)
@@ -509,27 +574,93 @@ class PatternRecognitionModule:
             logger.error(f"Failed to load model: {e}")
             return False
 
-    def train(self, train_images: List[str], epochs: int = 10) -> Dict:
+    def train(
+        self,
+        train_images: List[str],
+        val_images: List[str],
+        epochs: int = 10,
+        batch_size: int = 16,
+    ) -> Dict:
         """Train the pattern recognition model."""
         logger.info(
-            f"Training pattern recognition model with {len(train_images)} images"
+            f"Training pattern recognition model with {len(train_images)} train images and {len(val_images)} validation images"
         )
 
-        # Basic training implementation
-        # Full training requires labeled data with ground truth dimensions
-        logger.info(
-            f"Training pattern recognition model with {len(train_images)} images"
+        # Create datasets and dataloaders
+        train_dataset = PatternDataset(train_images, self.train_transforms, self.pattern_types)
+        val_dataset = PatternDataset(val_images, self.val_transforms, self.pattern_types)
+
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False
         )
 
-        # For now, save the current model state
-        # In production, this would involve:
-        # 1. Loading labeled training data
-        # 2. Training loop with optimization
-        # 3. Validation and checkpointing
-        self.save_model()
+        # Loss functions and optimizer
+        criterion_type = nn.CrossEntropyLoss()
+        criterion_dims = nn.MSELoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
 
-        return {
-            "status": "success",
-            "message": "Model checkpoint saved",
-            "epochs_completed": epochs,
-        }
+        best_val_loss = float("inf")
+        history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
+
+        for epoch in range(epochs):
+            self.model.train()
+            running_loss = 0.0
+            for images, labels, dims in train_loader:
+                images, labels, dims = (
+                    images.to(self.device),
+                    labels.to(self.device),
+                    dims.to(self.device),
+                )
+
+                optimizer.zero_grad()
+                outputs = self.model(images)
+                loss_type = criterion_type(outputs["pattern_type"], labels)
+                loss_dims = criterion_dims(outputs["dimensions"], dims)
+                loss = loss_type + loss_dims
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+
+            train_loss = running_loss / len(train_loader)
+            history["train_loss"].append(train_loss)
+
+            # Validation
+            self.model.eval()
+            val_loss = 0.0
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for images, labels, dims in val_loader:
+                    images, labels, dims = (
+                        images.to(self.device),
+                        labels.to(self.device),
+                        dims.to(self.device),
+                    )
+                    outputs = self.model(images)
+                    loss_type = criterion_type(outputs["pattern_type"], labels)
+                    loss_dims = criterion_dims(outputs["dimensions"], dims)
+                    loss = loss_type + loss_dims
+                    val_loss += loss.item()
+
+                    _, predicted = torch.max(outputs["pattern_type"].data, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+
+            val_loss /= len(val_loader)
+            val_accuracy = 100 * correct / total
+            history["val_loss"].append(val_loss)
+            history["val_accuracy"].append(val_accuracy)
+
+            logger.info(
+                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.2f}%"
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                self.save_model()
+
+        return history
+
