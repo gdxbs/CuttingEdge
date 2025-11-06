@@ -136,7 +136,7 @@ CLOTH = {
     # Threshold from Otsu's method research
     "THRESHOLD_VALUE": 127,  # Mid-point for binary thresholding
     # Minimum defect size from textile quality control standards
-    "MIN_DEFECT_AREA": 1,  # 1 cm² minimum defect size (industry QC standard)
+    "MIN_DEFECT_AREA": 500,  # 500 pixels minimum defect size to filter noise
     # Material types from textile classification
     "TYPES": [
         "cotton",

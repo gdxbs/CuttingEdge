@@ -137,7 +137,7 @@ class ClothRecognitionModule:
     4. Model training and inference
     """
 
-    def __init__(self, model_path: str = None):
+    def __init__(self, model_path: Optional[str] = None):
         """Initialize the cloth recognition module."""
         if model_path is None:
             model_path = os.path.join(
@@ -170,16 +170,18 @@ class ClothRecognitionModule:
         self, filename: str
     ) -> Tuple[Optional[float], Optional[float]]:
         """
-        Extract width and height from filename if available.
-        Format: cloth_200x300.jpg -> interpret as cm directly
-        The dimensions in filenames are already in centimeters.
+        Extract PLATE dimensions from filename if available.
+        Format: cloth_200x300.jpg -> plate dimensions in cm
+        The actual cloth shape will be detected from the image.
         """
         # Try to find a pattern like "200x300" in the filename
         match = re.search(r"(\d+)x(\d+)", filename)
         if match:
             width = float(match.group(1))
             height = float(match.group(2))
-            logger.info(f"Extracted dimensions from filename: {width}x{height} cm")
+            logger.info(
+                f"Extracted PLATE dimensions from filename: {width}x{height} cm"
+            )
             return width, height
         return None, None
 
@@ -288,8 +290,8 @@ class ClothRecognitionModule:
         self, img: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Simple color-based segmentation for cloth and defects.
-        Used as fallback or when U-Net is not configured.
+        Enhanced color-based segmentation for cloth and defects.
+        Detects holes (missing areas), stains (color variations), and edge defects.
         """
         # Convert to HSV for better color-based segmentation
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -308,15 +310,35 @@ class ClothRecognitionModule:
         )
         cloth_mask = cv2.morphologyEx(cloth_mask, cv2.MORPH_OPEN, kernel)
 
-        # Simple defect detection (very dark or very bright spots)
+        # Enhanced defect detection
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 1. Dark spots (holes, deep stains)
         _, dark_spots = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
+
+        # 2. Bright spots (stains, discolorations)
         _, bright_spots = cv2.threshold(gray, 225, 255, cv2.THRESH_BINARY)
 
+        # 3. Edge defects (using gradient detection)
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+        _, edge_defects = cv2.threshold(
+            gradient_magnitude.astype(np.uint8), 50, 255, cv2.THRESH_BINARY
+        )
+
+        # Combine all defect types
         defect_mask = cv2.bitwise_or(dark_spots, bright_spots)
-        defect_mask = cv2.bitwise_and(
-            defect_mask, cloth_mask
-        )  # Only defects within cloth
+        defect_mask = cv2.bitwise_or(defect_mask, edge_defects)
+
+        # Only defects within cloth boundary
+        defect_mask = cv2.bitwise_and(defect_mask, cloth_mask)
+
+        # Clean up defect mask
+        defect_mask = cv2.morphologyEx(defect_mask, cv2.MORPH_OPEN, kernel)
+        defect_mask = cv2.morphologyEx(
+            defect_mask, cv2.MORPH_CLOSE, kernel, iterations=2
+        )
 
         return cloth_mask, defect_mask
 
@@ -324,46 +346,51 @@ class ClothRecognitionModule:
         self,
         contour: np.ndarray,
         defects: List[np.ndarray],
-        width: float,
-        height: float,
+        plate_width: float,
+        plate_height: float,
     ) -> Tuple[float, float]:
         """
         Calculate total and usable areas for cloth.
+        Uses actual cloth contour area, not plate dimensions.
         Accounts for defects and edge margins.
         """
         # Check if contour is valid
         if contour is None or len(contour) == 0:
-            # If no contour, use full dimensions
-            total_area = width * height
+            # If no contour detected, use full plate dimensions
+            total_area = plate_width * plate_height
             margin = CLOTH["EDGE_MARGIN"]
-            usable_width = max(0, width - 2 * margin)
-            usable_height = max(0, height - 2 * margin)
+            usable_width = max(0, plate_width - 2 * margin)
+            usable_height = max(0, plate_height - 2 * margin)
             usable_area = usable_width * usable_height
             return total_area, usable_area
 
-        # Get pixel-to-cm scale
-        img_height, img_width = cv2.boundingRect(contour)[2:4]
-        scale_x = width / img_width if img_width > 0 else 1.0
-        scale_y = height / img_height if img_height > 0 else 1.0
+        # Calculate actual cloth area from contour (already in cm coordinates)
+        cloth_area = cv2.contourArea(contour)
 
-        # Calculate total area
-        total_area = width * height
+        # Calculate defect area (contours already in cm coordinates)
+        defect_area = sum(cv2.contourArea(defect) for defect in defects)
 
-        # Calculate defect area
-        defect_area = sum(
-            cv2.contourArea(defect) * scale_x * scale_y for defect in defects
-        )
-
-        # Calculate area after edge margin
+        # Apply edge margin to cloth area (shrink contour by margin)
         margin = CLOTH["EDGE_MARGIN"]
-        usable_width = max(0, width - 2 * margin)
-        usable_height = max(0, height - 2 * margin)
-        margin_area = usable_width * usable_height
+        # Approximate usable area by subtracting margin from cloth dimensions
+        cloth_rect = cv2.boundingRect(contour)
+        cloth_width = cloth_rect[2]
+        cloth_height = cloth_rect[3]
 
-        # Final usable area
-        usable_area = margin_area - defect_area
+        if cloth_width > 2 * margin and cloth_height > 2 * margin:
+            usable_width = cloth_width - 2 * margin
+            usable_height = cloth_height - 2 * margin
+            # Scale usable area by the ratio of cloth area to its bounding box
+            area_ratio = (
+                cloth_area / (cloth_width * cloth_height)
+                if cloth_width * cloth_height > 0
+                else 1.0
+            )
+            usable_area = usable_width * usable_height * area_ratio - defect_area
+        else:
+            usable_area = 0
 
-        return total_area, max(0, usable_area)
+        return cloth_area, max(0, usable_area)
 
     def detect_cloth_type(self, img: np.ndarray, contour: np.ndarray) -> str:
         """
@@ -378,10 +405,18 @@ class ClothRecognitionModule:
 
         # Calculate average color in HSV space
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        mean_hsv = cv2.mean(hsv, mask=mask)[:3]
-
-        # Simple cloth type classification based on HSV values
-        h, s, v = mean_hsv
+        # Use numpy to calculate mean values safely
+        if mask is not None and mask.size > 0:
+            mask_indices = np.where(mask > 0)
+            if len(mask_indices[0]) > 0:
+                h_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 0])
+                s_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 1])
+                v_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 2])
+                h, s, v = float(h_mean), float(s_mean), float(v_mean)
+            else:
+                h, s, v = 0, 0, 0
+        else:
+            h, s, v = 0, 0, 0
 
         # Very simple rule-based classification using heuristics from config
         heuristics = CLOTH["TYPE_HEURISTICS"]
@@ -429,7 +464,12 @@ class ClothRecognitionModule:
                     psi=gabor_settings["psi"],
                 )
                 filtered = cv2.filter2D(gray, cv2.CV_32F, kernel)
-                mean_response = cv2.mean(filtered, mask=mask)[0]
+                mean_val = cv2.mean(filtered, mask=mask)
+                mean_response = (
+                    float(mean_val[0])
+                    if hasattr(mean_val, "__getitem__") and len(mean_val) > 0
+                    else 0.0
+                )
 
                 orientations.append(theta * 180 / np.pi)  # Convert to degrees
                 responses.append(mean_response)
@@ -451,58 +491,58 @@ class ClothRecognitionModule:
         """
         Process a cloth image and extract all relevant information.
         This is the main entry point for cloth recognition.
+
+        Key concept: The filename contains PLATE dimensions (the container),
+        but the actual cloth shape is detected from the image and may be irregular.
         """
         logger.info(f"Processing cloth image: {image_path}")
 
-        # Extract cloth shape and defects
+        # Extract cloth shape and defects from image
         shape_info = self.extract_cloth_shape(image_path)
         contour = shape_info["contour"]
         defects = shape_info["defects"]
         cloth_mask = shape_info["cloth_mask"]
 
-        # Get filename and try to extract dimensions
+        # Get filename and extract PLATE dimensions (container size)
         filename = os.path.basename(image_path)
         name = os.path.splitext(filename)[0]
-        width, height = self.extract_dimensions_from_filename(filename)
+        plate_width, plate_height = self.extract_dimensions_from_filename(filename)
 
-        # If no dimensions in filename, use defaults
-        if width is None or height is None:
-            width = CLOTH["DEFAULT_WIDTH"]
-            height = CLOTH["DEFAULT_HEIGHT"]
-            logger.info(f"Using default dimensions: {width}x{height} cm")
-
-        # Apply scaling factor for optimal utilization
-        scaling_factor = CLOTH.get("SCALING_FACTOR", 1.0)
-        original_width, original_height = width, height  # Store original values
-        if scaling_factor != 1.0:
-            width = width * scaling_factor
-            height = height * scaling_factor
+        # If no dimensions in filename, use defaults as plate dimensions
+        if plate_width is None or plate_height is None:
+            plate_width = CLOTH["DEFAULT_WIDTH"]
+            plate_height = CLOTH["DEFAULT_HEIGHT"]
             logger.info(
-                f"Applied scaling factor {scaling_factor:.2f}x: {original_width}x{original_height} → {width:.1f}x{height:.1f} cm"
+                f"Using default PLATE dimensions: {plate_width}x{plate_height} cm"
             )
 
-        # Scale contour coordinates from pixels to cm (including scaling factor)
-        if (
-            original_width is not None
-            and original_height is not None
-            and len(contour) > 0
-        ):
+        # Apply scaling factor to plate dimensions for optimal utilization
+        scaling_factor = CLOTH.get("SCALING_FACTOR", 1.0)
+        original_plate_width, original_plate_height = plate_width, plate_height
+        if scaling_factor != 1.0:
+            plate_width = plate_width * scaling_factor
+            plate_height = plate_height * scaling_factor
+            logger.info(
+                f"Applied scaling factor {scaling_factor:.2f}x to PLATE: {original_plate_width}x{original_plate_height} → {plate_width:.1f}x{plate_height:.1f} cm"
+            )
+
+        # Scale contour coordinates from pixels to cm using PLATE dimensions
+        if len(contour) > 0:
             # Get image dimensions for pixel-to-cm conversion
             img = cv2.imread(image_path)
             if img is not None:
                 h_img, w_img = img.shape[:2]
 
-                # Calculate final scale from pixels to scaled cm
-                # Use original dimensions and apply scaling factor once
-                scale_x = (original_width * scaling_factor) / w_img
-                scale_y = (original_height * scaling_factor) / h_img
+                # Calculate scale from pixels to cm using PLATE dimensions
+                scale_x = plate_width / w_img
+                scale_y = plate_height / h_img
 
-                # Scale contour from pixels to final cm coordinates
+                # Scale contour from pixels to cm coordinates
                 contour = contour.astype(np.float32)
                 contour[:, :, 0] *= scale_x  # Scale x coordinates
                 contour[:, :, 1] *= scale_y  # Scale y coordinates
 
-                # Scale defect coordinates from pixels to final cm coordinates
+                # Scale defect coordinates from pixels to cm coordinates
                 scaled_defects = []
                 for defect in defects:
                     scaled_defect = defect.astype(np.float32)
@@ -511,11 +551,26 @@ class ClothRecognitionModule:
                     scaled_defects.append(scaled_defect)
                 defects = scaled_defects
 
-        # Calculate areas
-        total_area, usable_area = self.calculate_areas(contour, defects, width, height)
+        # Calculate actual cloth areas (not plate areas)
+        total_area, usable_area = self.calculate_areas(
+            contour, defects, plate_width, plate_height
+        )
+
+        # Get actual cloth dimensions from contour bounding box
+        if len(contour) > 0:
+            cloth_rect = cv2.boundingRect(contour)
+            cloth_width = cloth_rect[2]
+            cloth_height = cloth_rect[3]
+        else:
+            # Fallback to plate dimensions if no contour detected
+            cloth_width = plate_width
+            cloth_height = plate_height
 
         # Detect material type and properties
         img = cv2.imread(image_path)
+        if img is None:
+            img = np.zeros((100, 100, 3), dtype=np.uint8)  # Fallback image
+
         cloth_type = self.detect_cloth_type(img, contour)
 
         # Extract additional properties if cloth mask is available
@@ -523,23 +578,26 @@ class ClothRecognitionModule:
         if cloth_mask is not None:
             material_properties = self.extract_material_properties(img, cloth_mask)
 
-        # Create ClothMaterial object
+        # Create ClothMaterial object with actual cloth dimensions
         cloth = ClothMaterial(
             id=hash(image_path),
             name=name,
             cloth_type=cloth_type,
-            width=width,
-            height=height,
-            total_area=total_area,
-            usable_area=usable_area,
+            width=cloth_width,  # Actual cloth width, not plate width
+            height=cloth_height,  # Actual cloth height, not plate height
+            total_area=total_area,  # Actual cloth area
+            usable_area=usable_area,  # Actual usable area
             contour=contour,
             defects=defects or [],
             material_properties=material_properties or {},
             filename=os.path.basename(image_path),
         )
 
-        logger.info(f"Cloth detected: {cloth_type}, {width:.1f}x{height:.1f} cm")
-        logger.info(f"Usable area: {usable_area:.1f} cm² ({len(defects)} defects)")
+        logger.info(f"PLATE: {plate_width:.1f}x{plate_height:.1f} cm")
+        logger.info(f"CLOTH: {cloth_type}, {cloth_width:.1f}x{cloth_height:.1f} cm")
+        logger.info(
+            f"Actual cloth area: {total_area:.1f} cm², usable: {usable_area:.1f} cm² ({len(defects)} defects)"
+        )
 
         return cloth
 
