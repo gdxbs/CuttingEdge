@@ -950,10 +950,10 @@ class PatternFittingModule:
                         f"Shape: IRREGULAR (remnant/scrap, {shape_ratio * 100:.1f}% of bounding box)\n"
                     )
                 else:
-                    f.write(f"Shape: Regular rectangular\n")
+                    f.write("Shape: Regular rectangular\n")
                 f.write(f"Contour Points: {len(cloth.contour)}\n")
             else:
-                f.write(f"Shape: Rectangular\n")
+                f.write("Shape: Rectangular\n")
 
             f.write(f"Total Area: {cloth.total_area:.1f} cm²\n")
             f.write(f"Usable Area: {cloth.usable_area:.1f} cm²\n")

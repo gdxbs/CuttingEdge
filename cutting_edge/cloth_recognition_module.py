@@ -354,7 +354,7 @@ class ClothRecognitionModule:
         hsv_cloth = cv2.bitwise_and(hsv, hsv, mask=cloth_mask)
 
         # Calculate color statistics
-        hue = hsv_cloth[:, :, 0]
+        # hue = hsv_cloth[:, :, 0]  # Not used currently, but available for future enhancement
         sat = hsv_cloth[:, :, 1]
 
         # Areas with unusual saturation are likely stains
@@ -678,7 +678,7 @@ class ClothRecognitionModule:
                         f"Detected IRREGULAR cloth shape (complexity: {shape_complexity:.2f})"
                     )
                 else:
-                    logger.info(f"Detected regular rectangular cloth shape")
+                    logger.info("Detected regular rectangular cloth shape")
         else:
             # Fallback to plate dimensions if no contour detected
             cloth_width = plate_width
@@ -739,16 +739,20 @@ class ClothRecognitionModule:
         ax1.set_aspect("equal")
 
         # Draw cloth contour
-        if len(cloth.contour) > 0:
+        if len(cloth.contour) > 2:
             contour = cloth.contour.squeeze()
-            ax1.fill(
-                contour[:, 0],
-                contour[:, 1],
-                color="lightblue",
-                alpha=0.7,
-                label="Cloth material",
-            )
-            ax1.plot(contour[:, 0], contour[:, 1], "b-", linewidth=2)
+            # Ensure contour is 2D array with shape (N, 2)
+            if len(contour.shape) == 1:
+                contour = contour.reshape(-1, 2)
+            if contour.shape[0] >= 3:  # Need at least 3 points for a polygon
+                ax1.fill(
+                    contour[:, 0],
+                    contour[:, 1],
+                    color="lightblue",
+                    alpha=0.7,
+                    label="Cloth material",
+                )
+                ax1.plot(contour[:, 0], contour[:, 1], "b-", linewidth=2)
 
         # Draw defects with high visibility
         for i, defect in enumerate(cloth.defects or []):
