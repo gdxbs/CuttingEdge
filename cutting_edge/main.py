@@ -25,6 +25,7 @@ from .cloth_recognition_module import ClothMaterial, ClothRecognitionModule
 from .config import SYSTEM, TRAINING
 from .pattern_fitting_module import PatternFittingModule
 from .pattern_recognition_module import Pattern, PatternRecognitionModule
+from .training_optimizer import HeuristicOptimizer
 
 # Setup logging
 logging.basicConfig(
@@ -387,14 +388,31 @@ class CuttingEdgeSystem:
 
         return result
 
-    def run_training(self, epochs: int = 50, batch_size: int = 16):
-        """
-        Run training mode with k-fold cross-validation.
+    def _apply_best_config(self, config: Dict):
+        """Apply best configuration to fitting module."""
+        if "grid_size" in config:
+            self.fitting_module.grid_size = config["grid_size"]
+        if "rotation_angles" in config:
+            self.fitting_module.rotation_angles = config["rotation_angles"]
+        if "allow_flipping" in config:
+            self.fitting_module.allow_flipping = config["allow_flipping"]
+        if "max_attempts" in config:
+            self.fitting_module.max_attempts = config["max_attempts"]
+        logger.info(f"Applied configuration: {config}")
 
-        Based on:
-        [1] Kohavi (1995) "A study of cross-validation and bootstrap"
+    def run_training(self, epochs: int = 10, batch_size: int = 15):
         """
-        logger.info("=== TRAINING MODE ===")
+        Run hyperparameter optimization for heuristic fitting algorithm.
+
+        Optimizes parameters by grid searching and evaluating on train/val sets.
+        Saves best configuration to output/best_config.json.
+
+        Args:
+            epochs: Not used (kept for compatibility)
+            batch_size: Number of training samples to use per config evaluation
+        """
+        logger.info("=== HYPERPARAMETER OPTIMIZATION MODE ===")
+        logger.info("Optimizing heuristic parameters for pattern fitting")
 
         # Scan for training data
         pattern_files, cloth_files = self.scan_images()
@@ -403,18 +421,13 @@ class CuttingEdgeSystem:
             logger.error("No training data found")
             return
 
-        # Create training samples
         logger.info(
-            f"Creating training samples from {len(pattern_files)} patterns and {len(cloth_files)} cloths"
+            f"Available: {len(pattern_files)} patterns, {len(cloth_files)} cloths"
         )
 
-        # Split data for training/validation/test (70/15/15)
+        # Split data
         split_data = self.load_or_create_split(pattern_files, cloth_files)
 
-        train_samples = []
-        val_samples = []
-
-        # Handle different data structures
         train_cloth = split_data.get("train", {}).get(
             "cloth", split_data.get("cloth_train", [])
         )
@@ -422,138 +435,105 @@ class CuttingEdgeSystem:
             "pattern", split_data.get("pattern_train", [])
         )
         val_cloth = split_data.get("val", {}).get(
-            "cloth", split_data.get("cloth_test", [])[:5]
-        )
+            "cloth", split_data.get("cloth_test", [])
+        )[:15]
         val_pattern = split_data.get("val", {}).get(
             "pattern", split_data.get("pattern_test", [])
-        )[:10]
+        )
 
-        # Create training samples (combinations of patterns and cloths)
-        for cloth_file in train_cloth[:20]:  # Limit for demo
-            # Select random patterns for this cloth
-            num_patterns = random.randint(2, 5)
+        # Create training samples
+        train_samples = []
+        for cloth_file in train_cloth[:batch_size]:
+            num_patterns = random.randint(3, 6)
             selected_patterns = random.sample(
-                train_pattern,
-                min(num_patterns, len(train_pattern)),
+                train_pattern, min(num_patterns, len(train_pattern))
             )
-
             train_samples.append({"patterns": selected_patterns, "cloth": cloth_file})
 
         # Create validation samples
-        for cloth_file in val_cloth[:5]:
-            num_patterns = random.randint(2, 5)
+        val_samples = []
+        for cloth_file in val_cloth:
+            num_patterns = random.randint(3, 6)
             selected_patterns = random.sample(
-                val_pattern,
-                min(num_patterns, len(val_pattern)),
+                val_pattern, min(num_patterns, len(val_pattern))
             )
-
             val_samples.append({"patterns": selected_patterns, "cloth": cloth_file})
 
-        logger.info(
-            f"Training with {len(train_samples)} train samples, {len(val_samples)} val samples"
-        )
+        logger.info(f"Training samples: {len(train_samples)}")
+        logger.info(f"Validation samples: {len(val_samples)}")
 
-        # Training loop
-        best_val_score = float("-inf")
-        train_history = {"train_scores": [], "val_scores": []}
+        # Load models
+        self.pattern_module.load_model()
+        self.cloth_module.load_model()
+        self.fitting_module.load_model()
 
-        for epoch in range(epochs):
-            logger.info(f"\n--- Epoch {epoch + 1}/{epochs} ---")
+        # Initialize optimizer
+        optimizer = HeuristicOptimizer(self)
 
-            # Training phase
-            train_scores = []
-            for sample in train_samples[:batch_size]:  # Mini-batch
-                patterns = [
-                    self.pattern_module.process_image(p) for p in sample["patterns"]
-                ]
-                patterns = [p for p in patterns if p is not None]
+        # Define search space (smaller for faster training)
+        param_grid = {
+            "grid_size": [20, 25],  # Grid resolution
+            "rotation_angles": [
+                [0, 90, 180, 270],  # Orthogonal
+                [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way
+            ],
+            "allow_flipping": [True],  # Always allow flipping
+            "max_attempts": [500],  # Fixed for speed
+        }
 
-                if not patterns:
-                    continue
+        # Run optimization
+        results = optimizer.optimize(train_samples, val_samples, param_grid)
 
-                cloth = self.cloth_module.process_image(sample["cloth"])
+        # Apply best configuration
+        if results["best_config"]:
+            self._apply_best_config(results["best_config"])
 
-                # Fit patterns
-                result = self.fitting_module.fit_patterns(patterns, cloth)
+        # Save results
+        optimizer.save_results(str(self.output_dir))
 
-                # Calculate score (utilization is our main metric)
-                score = result["utilization_percentage"]
-                train_scores.append(score)
+        # Save fitted module with best config
+        self.fitting_module.save_model()
 
-            avg_train_score = np.mean(train_scores) if train_scores else 0
-            train_history["train_scores"].append(avg_train_score)
+        logger.info("\n" + "=" * 70)
+        logger.info("TRAINING COMPLETE")
+        logger.info("=" * 70)
+        logger.info(f"Best score: {results['best_score']:.2f}")
+        logger.info(f"Configurations tested: {len(results['training_history'])}")
+        logger.info("=" * 70)
 
-            # Validation phase
-            val_scores = []
-            for sample in val_samples:
-                patterns = [
-                    self.pattern_module.process_image(p) for p in sample["patterns"]
-                ]
-                patterns = [p for p in patterns if p is not None]
-
-                if not patterns:
-                    continue
-
-                cloth = self.cloth_module.process_image(sample["cloth"])
-                result = self.fitting_module.fit_patterns(patterns, cloth)
-
-                val_scores.append(result["utilization_percentage"])
-
-            avg_val_score = np.mean(val_scores) if val_scores else 0
-            train_history["val_scores"].append(avg_val_score)
-
-            logger.info(
-                f"Train Score: {avg_train_score:.1f}%, Val Score: {avg_val_score:.1f}%"
-            )
-
-            # Save best model
-            if avg_val_score > best_val_score:
-                best_val_score = avg_val_score
-                logger.info(f"New best validation score: {best_val_score:.1f}%")
-
-                # Save models
-                self.pattern_module.save_model()
-                self.cloth_module.save_model()
-                self.fitting_module.save_model()
-
-            # Early stopping (if no improvement for 10 epochs)
-            if epoch > 10:
-                recent_scores = train_history["val_scores"][-10:]
-                if max(recent_scores) == recent_scores[0]:
-                    logger.info("Early stopping - no improvement in 10 epochs")
-                    break
-
-        logger.info(
-            f"\nTraining complete! Best validation score: {best_val_score:.1f}%"
-        )
-
-        # Save training history
-        history_path = os.path.join(self.output_dir, "training_history.json")
-        with open(history_path, "w") as f:
-            json.dump(train_history, f, indent=2)
-        logger.info(f"Training history saved to {history_path}")
-
-        return train_history
+        return results
 
     def run_evaluation(self):
         """
-        Run evaluation mode on test set.
+        Run comprehensive evaluation on test set with best configuration.
+
+        Loads best trained configuration and evaluates on held-out test data.
+        Generates detailed performance reports.
         """
-        logger.info("=== EVALUATION MODE ===")
+        import time
+
+        logger.info("=== ENHANCED EVALUATION MODE ===")
 
         # Load test data
         pattern_files, cloth_files = self.scan_images()
         split_data = self.load_or_create_split(pattern_files, cloth_files)
 
-        # Load best models
+        # Load best models and configuration
         self.pattern_module.load_model()
         self.cloth_module.load_model()
         self.fitting_module.load_model()
 
-        # Evaluate on test set
-        test_results = []
+        # Load best config if available
+        config_path = os.path.join(self.output_dir, "best_config.json")
+        if os.path.exists(config_path):
+            logger.info(f"Loading best configuration from {config_path}")
+            with open(config_path, "r") as f:
+                best_config = json.load(f)
+            self._apply_best_config(best_config)
+        else:
+            logger.warning("No best config found, using default parameters")
 
-        # Handle different data structures
+        # Get test data
         test_cloth = split_data.get("test", {}).get(
             "cloth", split_data.get("cloth_test", [])
         )
@@ -561,62 +541,116 @@ class CuttingEdgeSystem:
             "pattern", split_data.get("pattern_test", [])
         )
 
-        for cloth_file in test_cloth[:10]:  # Limit for demo
-            num_patterns = random.randint(2, 5)
-            selected_patterns = random.sample(
-                test_pattern,
-                min(num_patterns, len(test_pattern)),
-            )
+        logger.info(f"Test set: {len(test_cloth)} cloths, {len(test_pattern)} patterns")
 
-            patterns = [self.pattern_module.process_image(p) for p in selected_patterns]
+        # Evaluate on test set
+        test_results = []
+        test_samples = []
+
+        for cloth_file in test_cloth[:20]:  # Test on 20 cloths
+            num_patterns = random.randint(3, 7)
+            selected_patterns = random.sample(
+                test_pattern, min(num_patterns, len(test_pattern))
+            )
+            test_samples.append({"patterns": selected_patterns, "cloth": cloth_file})
+
+        logger.info(f"Evaluating on {len(test_samples)} test samples...")
+
+        for i, sample in enumerate(test_samples, 1):
+            logger.info(f"Testing sample {i}/{len(test_samples)}...")
+
+            start_time = time.time()
+
+            # Process patterns
+            patterns = [
+                self.pattern_module.process_image(p) for p in sample["patterns"]
+            ]
             patterns = [p for p in patterns if p is not None]
 
             if not patterns:
                 continue
 
-            cloth = self.cloth_module.process_image(cloth_file)
+            # Process cloth
+            cloth = self.cloth_module.process_image(sample["cloth"])
+
+            # Fit patterns
             result = self.fitting_module.fit_patterns(patterns, cloth)
 
+            elapsed_time = time.time() - start_time
+
+            # Store detailed results
             test_results.append(
                 {
+                    "cloth_file": os.path.basename(sample["cloth"]),
+                    "cloth_type": cloth.cloth_type,
+                    "cloth_size": f"{cloth.width:.1f}x{cloth.height:.1f}cm",
+                    "num_patterns": len(patterns),
+                    "patterns_placed": result["patterns_placed"],
                     "utilization": result["utilization_percentage"],
                     "success_rate": result["success_rate"],
-                    "waste": result["waste_area"],
-                    "num_patterns": len(patterns),
+                    "waste_area": result["waste_area"],
+                    "processing_time": elapsed_time,
                 }
             )
 
-        # Calculate metrics
-        avg_utilization = np.mean([r["utilization"] for r in test_results])
-        avg_success = np.mean([r["success_rate"] for r in test_results])
-        avg_waste = np.mean([r["waste"] for r in test_results])
+        # Calculate comprehensive metrics
+        if test_results:
+            avg_utilization = np.mean([r["utilization"] for r in test_results])
+            avg_success = np.mean([r["success_rate"] for r in test_results])
+            avg_waste = np.mean([r["waste_area"] for r in test_results])
+            avg_time = np.mean([r["processing_time"] for r in test_results])
+            total_placed = sum([r["patterns_placed"] for r in test_results])
+            total_attempted = sum([r["num_patterns"] for r in test_results])
+        else:
+            avg_utilization = avg_success = avg_waste = avg_time = 0
+            total_placed = total_attempted = 0
 
-        logger.info("\n" + "=" * 50)
+        # Log results
+        logger.info("\n" + "=" * 70)
         logger.info("TEST SET EVALUATION RESULTS")
-        logger.info("=" * 50)
-        logger.info(f"Average Utilization: {avg_utilization:.1f}%")
-        logger.info(f"Average Success Rate: {avg_success:.1f}%")
-        logger.info(f"Average Waste: {avg_waste:.1f} cm²")
-        logger.info(f"Number of test samples: {len(test_results)}")
+        logger.info("=" * 70)
+        logger.info(f"Samples evaluated: {len(test_results)}")
+        logger.info(f"Average utilization: {avg_utilization:.1f}%")
+        logger.info(f"Average success rate: {avg_success:.1f}%")
+        logger.info(f"Average waste: {avg_waste:.1f} cm²")
+        logger.info(f"Average processing time: {avg_time:.2f}s")
+        logger.info(f"Total patterns placed: {total_placed}/{total_attempted}")
+        logger.info("=" * 70)
 
         # Save results
-        results_path = os.path.join(self.output_dir, "test_results.json")
+        results_path = os.path.join(self.output_dir, "evaluation_results.json")
         with open(results_path, "w") as f:
             json.dump(
                 {
                     "summary": {
+                        "num_samples": len(test_results),
                         "avg_utilization": avg_utilization,
                         "avg_success_rate": avg_success,
                         "avg_waste": avg_waste,
-                        "num_samples": len(test_results),
+                        "avg_time": avg_time,
+                        "total_placed": total_placed,
+                        "total_attempted": total_attempted,
                     },
                     "detailed_results": test_results,
                 },
                 f,
                 indent=2,
             )
+        logger.info(f"Detailed results saved to {results_path}")
 
-        logger.info(f"Results saved to {results_path}")
+        # Create summary report
+        summary_path = os.path.join(self.output_dir, "evaluation_summary.txt")
+        with open(summary_path, "w") as f:
+            f.write("=" * 70 + "\n")
+            f.write("EVALUATION SUMMARY REPORT\n")
+            f.write("=" * 70 + "\n\n")
+            f.write(f"Samples evaluated: {len(test_results)}\n")
+            f.write(f"Average utilization: {avg_utilization:.1f}%\n")
+            f.write(f"Average success rate: {avg_success:.1f}%\n")
+            f.write(f"Average waste: {avg_waste:.1f} cm²\n")
+            f.write(f"Average processing time: {avg_time:.2f}s\n")
+            f.write(f"Total patterns placed: {total_placed}/{total_attempted}\n")
+        logger.info(f"Summary report saved to {summary_path}")
 
         return test_results
 

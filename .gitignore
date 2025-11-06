@@ -40,6 +40,12 @@ outputs/
 logs/
 images/
 
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
 .DS_Store
 
 output/

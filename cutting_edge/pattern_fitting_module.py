@@ -143,9 +143,11 @@ class PatternFittingModule:
                 self.optimizer.parameters(), lr=FITTING["AGENT"]["learning_rate"]
             )
 
-        # Configure rotation angles to try
+        # Configure heuristic parameters (can be optimized during training)
+        self.grid_size = FITTING["GRID_SIZE"]
         self.rotation_angles = FITTING["ROTATION_ANGLES"]
         self.allow_flipping = FITTING["ALLOW_FLIPPING"]
+        self.max_attempts = FITTING["MAX_ATTEMPTS"]
 
         logger.info(f"Pattern Fitting Module initialized. Using device: {self.device}")
         logger.info(f"Using neural optimization: {self.use_neural}")
@@ -546,26 +548,20 @@ class PatternFittingModule:
             )
 
         # 3. Grid search (always as fallback)
-        grid_size = FITTING["GRID_SIZE"]
-        step_x = cloth.width / grid_size
-        step_y = cloth.height / grid_size
+        # Use instance grid_size (can be optimized)
+        step_x = cloth.width / self.grid_size
+        step_y = cloth.height / self.grid_size
 
-        # Add heuristic positions (corners and edges)
-        self.add_heuristic_positions(positions_to_try, cloth)
+        # Generate grid positions
+        positions_to_try = []
 
-        # Adaptive rotation angles for remnants
-        if is_remnant and FITTING.get("FREE_ROTATION_ANGLES"):
-            rotation_angles = FITTING["FREE_ROTATION_ANGLES"]
-        else:
-            rotation_angles = self.rotation_angles
-
-        for i in range(grid_size):
-            for j in range(grid_size):
+        for i in range(self.grid_size):
+            for j in range(self.grid_size):
                 x = i * step_x
                 y = j * step_y
 
                 # Try rotation angles
-                for rotation in rotation_angles:
+                for rotation in self.rotation_angles:
                     # Try both normal and flipped orientations
                     flipped_options = [False, True] if self.allow_flipping else [False]
 
@@ -1050,54 +1046,67 @@ class PatternFittingModule:
 
     def save_model(self):
         """
-        Save the placement optimizer model.
+        Save the placement optimizer model or heuristic configuration.
         """
-        if not self.use_neural:
-            logger.warning("Neural optimization not enabled, no model to save.")
-            return False
-
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
 
-        # Save the model
         model_data = {
-            "model_state_dict": self.optimizer.state_dict(),
-            "optimizer_state_dict": self.optimizer_optim.state_dict(),
+            "use_neural": self.use_neural,
+            "grid_size": self.grid_size,
             "rotation_angles": self.rotation_angles,
             "allow_flipping": self.allow_flipping,
+            "max_attempts": self.max_attempts,
         }
+
+        # If neural optimization is enabled, also save neural model
+        if self.use_neural:
+            model_data["model_state_dict"] = self.optimizer.state_dict()
+            model_data["optimizer_state_dict"] = self.optimizer_optim.state_dict()
 
         with open(self.model_path, "wb") as f:
             pickle.dump(model_data, f)
 
-        logger.info(f"Pattern fitting model saved to {self.model_path}")
+        logger.info(f"Pattern fitting configuration saved to {self.model_path}")
         return True
 
     def load_model(self) -> bool:
         """
-        Load the placement optimizer model.
+        Load the placement optimizer model or heuristic configuration.
         """
-        if not self.use_neural:
-            logger.warning("Neural optimization not enabled, no model to load.")
-            return False
-
         if not os.path.exists(self.model_path):
             logger.warning(f"No model found at {self.model_path}")
             return False
 
         try:
-            logger.info(f"Loading pattern fitting model from {self.model_path}")
+            logger.info(f"Loading pattern fitting configuration from {self.model_path}")
 
             with open(self.model_path, "rb") as f:
                 model_data = pickle.load(f)
 
-            self.optimizer.load_state_dict(model_data["model_state_dict"])
-            self.optimizer_optim.load_state_dict(model_data["optimizer_state_dict"])
+            # Load heuristic parameters (always present)
+            if "grid_size" in model_data:
+                self.grid_size = model_data["grid_size"]
+                logger.info(f"Loaded grid_size: {self.grid_size}")
 
             if "rotation_angles" in model_data:
                 self.rotation_angles = model_data["rotation_angles"]
+                logger.info(
+                    f"Loaded rotation_angles: {len(self.rotation_angles)} angles"
+                )
 
             if "allow_flipping" in model_data:
                 self.allow_flipping = model_data["allow_flipping"]
+                logger.info(f"Loaded allow_flipping: {self.allow_flipping}")
+
+            if "max_attempts" in model_data:
+                self.max_attempts = model_data["max_attempts"]
+                logger.info(f"Loaded max_attempts: {self.max_attempts}")
+
+            # Load neural model if present and neural optimization is enabled
+            if self.use_neural and "model_state_dict" in model_data:
+                self.optimizer.load_state_dict(model_data["model_state_dict"])
+                self.optimizer_optim.load_state_dict(model_data["optimizer_state_dict"])
+                logger.info("Loaded neural optimizer state")
 
             logger.info("Pattern fitting model loaded successfully")
             return True
