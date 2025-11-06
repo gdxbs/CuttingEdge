@@ -168,29 +168,15 @@ class ClothRecognitionModule:
     ) -> Tuple[Optional[float], Optional[float]]:
         """
         Extract width and height from filename if available.
-        Format: cloth_200x300.jpg -> interpret as pixels, convert to cm
+        Format: cloth_200x300.jpg -> interpret as cm directly
+        The dimensions in filenames are already in centimeters.
         """
         # Try to find a pattern like "200x300" in the filename
         match = re.search(r"(\d+)x(\d+)", filename)
         if match:
-            width_px = float(match.group(1))
-            height_px = float(match.group(2))
-
-            # If dimensions are large (>400), they're likely pixels not cm
-            # Standard fabric width is 150cm (60 inches)
-            if width_px > 400 or height_px > 400:
-                # Convert pixels to cm using standard DPI
-                # Assuming 100 DPI for fabric images
-                width = width_px * 2.54 / 100  # inches to cm
-                height = height_px * 2.54 / 100
-                logger.info(
-                    f"Converted pixel dimensions {width_px}x{height_px}px to {width:.1f}x{height:.1f} cm"
-                )
-            else:
-                # Already in cm
-                width = width_px
-                height = height_px
-                logger.info(f"Extracted dimensions from filename: {width}x{height} cm")
+            width = float(match.group(1))
+            height = float(match.group(2))
+            logger.info(f"Extracted dimensions from filename: {width}x{height} cm")
             return width, height
         return None, None
 

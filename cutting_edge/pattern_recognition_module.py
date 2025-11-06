@@ -155,7 +155,6 @@ class PatternRecognitionModule:
         # Image preprocessing transforms
         self.transforms = transforms.Compose(
             [
-                transforms.ToPILImage(),
                 transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
                 transforms.ToTensor(),
                 transforms.Normalize(
@@ -390,13 +389,11 @@ class PatternRecognitionModule:
         img = cv2.imread(image_path)
         if img is not None:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # Use PIL to convert numpy array to tensor properly
+            # Convert to PIL for transforms pipeline
             from PIL import Image
 
             pil_img = Image.fromarray(img_rgb)
             transformed = self.transforms(pil_img)
-            if not isinstance(transformed, torch.Tensor):
-                transformed = torch.tensor(transformed)
             img_tensor = transformed.unsqueeze(0).to(self.device)
 
             # Run inference
