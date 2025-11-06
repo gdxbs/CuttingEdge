@@ -463,6 +463,16 @@ class ClothRecognitionModule:
             height = CLOTH["DEFAULT_HEIGHT"]
             logger.info(f"Using default dimensions: {width}x{height} cm")
 
+        # Apply scaling factor for optimal utilization
+        scaling_factor = CLOTH.get("SCALING_FACTOR", 1.0)
+        if scaling_factor != 1.0:
+            original_width, original_height = width, height
+            width = width * scaling_factor
+            height = height * scaling_factor
+            logger.info(
+                f"Applied scaling factor {scaling_factor:.2f}x: {original_width}x{original_height} → {width:.1f}x{height:.1f} cm"
+            )
+
         # Calculate areas
         total_area, usable_area = self.calculate_areas(contour, defects, width, height)
 

@@ -40,7 +40,7 @@ Usage examples:
 Dependencies:
   Required:
     - svgwrite: For SVG generation
-  
+
   Optional (for PNG conversion):
     - cairosvg (preferred): Robust SVG to PNG conversion
     - svglib + reportlab: Alternative SVG to PNG conversion
@@ -52,14 +52,12 @@ import argparse
 import csv
 import json
 import math
-import os
 import random
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
-
+from typing import Dict, List, Optional, Tuple
 
 # Optional dependencies for SVG rendering and PNG conversion
 try:
@@ -68,8 +66,8 @@ except Exception:
     svgwrite = None  # type: ignore
 
 try:
-    from svglib import svglib  # type: ignore
     from reportlab.graphics import renderPM  # type: ignore
+    from svglib import svglib  # type: ignore
 except Exception:
     svglib = None  # type: ignore
     renderPM = None  # type: ignore

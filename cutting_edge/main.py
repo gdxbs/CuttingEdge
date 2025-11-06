@@ -14,12 +14,11 @@ import argparse
 import json
 import logging
 import os
-import pickle
 import random
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 
 from .cloth_recognition_module import ClothMaterial, ClothRecognitionModule

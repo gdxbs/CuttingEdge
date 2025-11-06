@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch

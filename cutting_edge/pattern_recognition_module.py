@@ -9,9 +9,9 @@ Balances simplicity with functionality.
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
-import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np
@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF
 
 from .config import IMAGENET_NORMALIZE, PATTERN, SYSTEM
 
@@ -435,14 +434,17 @@ class PatternRecognitionModule:
                 )
                 width, height = standard["width"], standard["height"]
 
-        # Calculate area
-        if isinstance(contour, np.ndarray) and len(contour) > 2:
-            # Use contour area
+        # Calculate area - prioritize filename dimensions since they're in cm
+        if width is not None and height is not None:
+            # Use dimensions from filename (already in cm)
+            area = width * height
+        elif isinstance(contour, np.ndarray) and len(contour) > 2:
+            # Use contour area as fallback
             pixel_area = cv2.contourArea(contour)
             area = pixel_area * (PATTERN["PIXEL_TO_CM"] ** 2)
         else:
             # Fallback to rectangular area
-            area = width * height
+            area = width * height if width and height else 0.0
 
         # Ensure proper types for Pattern object
         contour_array = contour if isinstance(contour, np.ndarray) else np.array([])
