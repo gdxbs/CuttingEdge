@@ -271,6 +271,9 @@ class ClothRecognitionModule:
             main_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]])
             valid_defects = []
 
+        # Keep contour in pixel coordinates for now
+        # Scaling to cm will be done in process_image to maintain consistency
+
         return {
             "contour": main_contour,
             "defects": valid_defects,
@@ -366,7 +369,9 @@ class ClothRecognitionModule:
         """
         # Create mask for the cloth region
         mask = np.zeros(img.shape[:2], dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
+        # Convert contour to integer for OpenCV drawing operations
+        contour_int = contour.astype(np.int32) if contour.dtype != np.int32 else contour
+        cv2.drawContours(mask, [contour_int], -1, 255, -1)
 
         # Calculate average color in HSV space
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -465,13 +470,43 @@ class ClothRecognitionModule:
 
         # Apply scaling factor for optimal utilization
         scaling_factor = CLOTH.get("SCALING_FACTOR", 1.0)
+        original_width, original_height = width, height  # Store original values
         if scaling_factor != 1.0:
-            original_width, original_height = width, height
             width = width * scaling_factor
             height = height * scaling_factor
             logger.info(
                 f"Applied scaling factor {scaling_factor:.2f}x: {original_width}x{original_height} → {width:.1f}x{height:.1f} cm"
             )
+
+        # Scale contour coordinates from pixels to cm (including scaling factor)
+        if (
+            original_width is not None
+            and original_height is not None
+            and len(contour) > 0
+        ):
+            # Get image dimensions for pixel-to-cm conversion
+            img = cv2.imread(image_path)
+            if img is not None:
+                h_img, w_img = img.shape[:2]
+
+                # Calculate final scale from pixels to scaled cm
+                # Use original dimensions and apply scaling factor once
+                scale_x = (original_width * scaling_factor) / w_img
+                scale_y = (original_height * scaling_factor) / h_img
+
+                # Scale contour from pixels to final cm coordinates
+                contour = contour.astype(np.float32)
+                contour[:, :, 0] *= scale_x  # Scale x coordinates
+                contour[:, :, 1] *= scale_y  # Scale y coordinates
+
+                # Scale defect coordinates from pixels to final cm coordinates
+                scaled_defects = []
+                for defect in defects:
+                    scaled_defect = defect.astype(np.float32)
+                    scaled_defect[:, :, 0] *= scale_x
+                    scaled_defect[:, :, 1] *= scale_y
+                    scaled_defects.append(scaled_defect)
+                defects = scaled_defects
 
         # Calculate areas
         total_area, usable_area = self.calculate_areas(contour, defects, width, height)

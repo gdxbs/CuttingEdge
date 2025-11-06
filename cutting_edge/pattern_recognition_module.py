@@ -247,14 +247,42 @@ class PatternRecognitionModule:
         # Apply thresholding to separate pattern from background
         # Try adaptive thresholding first
         try:
-            binary = cv2.adaptiveThreshold(
-                gray,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY_INV,
-                PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
-                PATTERN["ADAPTIVE_THRESH_C"],
+            # Try Otsu thresholding first (works better for most patterns)
+            _, binary = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
+
+            # Check if Otsu gave good results (large contour)
+            contours, _ = cv2.findContours(
+                binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            if contours:
+                main_contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(main_contour)
+
+                # If Otsu found a reasonably large contour, use it
+                if w > 50 and h > 50:
+                    pass  # Keep Otsu result
+                else:
+                    # Fallback to adaptive thresholding
+                    binary = cv2.adaptiveThreshold(
+                        gray,
+                        255,
+                        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv2.THRESH_BINARY_INV,
+                        PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
+                        PATTERN["ADAPTIVE_THRESH_C"],
+                    )
+            else:
+                # Fallback to adaptive thresholding
+                binary = cv2.adaptiveThreshold(
+                    gray,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY_INV,
+                    PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
+                    PATTERN["ADAPTIVE_THRESH_C"],
+                )
         except Exception:
             # Fallback to regular thresholding
             _, binary = cv2.threshold(
@@ -282,9 +310,11 @@ class PatternRecognitionModule:
             # Get the largest contour (assumed to be the pattern)
             main_contour = max(contours, key=cv2.contourArea)
 
-        # Simplify the contour
+        # Simplify the contour - use less aggressive simplification for better shape accuracy
         perimeter = cv2.arcLength(main_contour, True)
-        epsilon = PATTERN["CONTOUR_SIMPLIFICATION"] * perimeter
+        epsilon = (
+            PATTERN["CONTOUR_SIMPLIFICATION"] * perimeter * 0.5
+        )  # Reduce simplification
         simplified = cv2.approxPolyDP(main_contour, epsilon, True)
 
         # Extract key points (corners or significant points)
@@ -445,6 +475,36 @@ class PatternRecognitionModule:
         else:
             # Fallback to rectangular area
             area = width * height if width and height else 0.0
+
+        # Scale contour to cm coordinates if we have filename dimensions
+        if (
+            isinstance(contour, np.ndarray)
+            and len(contour) > 0
+            and width is not None
+            and height is not None
+        ):
+            # Get current contour bounds in pixels
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # Calculate scale factors to match filename dimensions
+            if w > 0 and h > 0:
+                scale_x = width / w
+                scale_y = height / h
+
+                # Scale contour points to cm coordinates
+                scaled_contour = contour.copy().astype(float)
+                scaled_contour[:, 0, 0] *= scale_x  # Scale x coordinates
+                scaled_contour[:, 0, 1] *= scale_y  # Scale y coordinates
+                contour = scaled_contour
+
+                # Also scale key points if they exist
+                if isinstance(key_points, list):
+                    scaled_key_points = []
+                    for kp_x, kp_y in key_points:
+                        scaled_x = kp_x * scale_x
+                        scaled_y = kp_y * scale_y
+                        scaled_key_points.append((scaled_x, scaled_y))
+                    key_points = scaled_key_points
 
         # Ensure proper types for Pattern object
         contour_array = contour if isinstance(contour, np.ndarray) else np.array([])
