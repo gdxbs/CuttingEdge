@@ -41,3 +41,5 @@ logs/
 images/
 
 .DS_Store
+
+output/
