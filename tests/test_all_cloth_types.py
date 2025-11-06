@@ -13,7 +13,6 @@ This test:
 import os
 import sys
 from collections import defaultdict
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -89,7 +88,7 @@ def test_cloth_category(cloth_dir: str, category_name: str, max_samples: int = 3
                 if shape_ratio < 0.85:
                     print(f"  Shape: IRREGULAR (complexity: {shape_ratio:.2f})")
                 else:
-                    print(f"  Shape: Regular rectangular")
+                    print("  Shape: Regular rectangular")
 
             # Verify defect detection based on category
             expected_defects = {
@@ -143,7 +142,7 @@ def test_cloth_category(cloth_dir: str, category_name: str, max_samples: int = 3
 def test_pattern_shapes(max_samples: int = 5):
     """Test pattern shape extraction accuracy."""
     print(f"\n{'=' * 80}")
-    print(f"TESTING PATTERN SHAPE EXTRACTION")
+    print("TESTING PATTERN SHAPE EXTRACTION")
     print(f"{'=' * 80}")
 
     pattern_module = PatternRecognitionModule()
@@ -205,7 +204,7 @@ def test_pattern_shapes(max_samples: int = 5):
                     height_match = abs(bbox_h - pattern.height) / pattern.height < 0.10
 
                     if width_match and height_match:
-                        print(f"  ✓ Contour matches dimensions")
+                        print("  ✓ Contour matches dimensions")
                     else:
                         print(
                             f"  ⚠ Contour mismatch: bbox={bbox_w:.1f}x{bbox_h:.1f}, expected={pattern.width:.1f}x{pattern.height:.1f}"
@@ -234,7 +233,7 @@ def test_pattern_shapes(max_samples: int = 5):
 def test_fitting_on_different_cloths(pattern_results, cloth_results):
     """Test pattern fitting on different cloth types."""
     print(f"\n{'=' * 80}")
-    print(f"TESTING PATTERN FITTING ON DIFFERENT CLOTH TYPES")
+    print("TESTING PATTERN FITTING ON DIFFERENT CLOTH TYPES")
     print(f"{'=' * 80}")
 
     fitting_module = PatternFittingModule()
@@ -285,7 +284,6 @@ def test_fitting_on_different_cloths(pattern_results, cloth_results):
 
             # Verify defect avoidance
             if cloth.defects and len(cloth.defects) > 0:
-                from shapely.geometry import Polygon
 
                 cloth_poly, defect_polys = fitting_module.create_cloth_polygon(cloth)
 
@@ -296,7 +294,7 @@ def test_fitting_on_different_cloths(pattern_results, cloth_results):
                             intersections += 1
 
                 if intersections == 0:
-                    print(f"  ✓ All patterns avoid defects")
+                    print("  ✓ All patterns avoid defects")
                 else:
                     print(f"  ⚠ {intersections} pattern-defect intersections found!")
 
@@ -342,7 +340,7 @@ def main():
 
     # Summary
     print(f"\n{'=' * 80}")
-    print(f"TEST SUMMARY")
+    print("TEST SUMMARY")
     print(f"{'=' * 80}")
 
     # Cloth detection summary
@@ -358,7 +356,7 @@ def main():
 
     print(f"\nPattern Extraction: {len(pattern_results)} patterns tested")
 
-    print(f"\nAll visualizations saved to: output/cloth_inspection/")
+    print("\nAll visualizations saved to: output/cloth_inspection/")
     print(f"\n{'=' * 80}")
     print("TEST COMPLETE - Check output/cloth_inspection/ for visual verification")
     print(f"{'=' * 80}\n")

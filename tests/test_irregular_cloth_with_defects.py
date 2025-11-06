@@ -164,7 +164,7 @@ def test_pattern_fitting_on_irregular_cloth():
     pattern_paths = []
     shape_dir = "images/shape"
     if os.path.exists(shape_dir):
-        for root, dirs, files in os.walk(shape_dir):
+        for root, _dirs, files in os.walk(shape_dir):
             for file in files:
                 if file.endswith(".png") and "panel_" in file:
                     pattern_paths.append(os.path.join(root, file))

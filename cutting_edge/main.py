@@ -43,7 +43,7 @@ class CuttingEdgeSystem:
         # Set base directory
         if base_dir is None:
             base_dir = SYSTEM["BASE_DIR"]
-        self.base_dir = Path(base_dir)
+        self.base_dir = Path(base_dir) if base_dir else Path.cwd()
 
         # Setup directories
         self.images_dir = self.base_dir / SYSTEM["IMAGES_DIR"]
@@ -164,23 +164,94 @@ class CuttingEdgeSystem:
 
     def split_data(self, pattern_files: List[str], cloth_files: List[str]) -> Dict:
         """
-        Split the data into training and testing sets.
+        Split the data into training and testing sets with balanced cloth sizes.
+        Uses stratified sampling to ensure both small and large cloths are in train/test.
         """
-        # Randomize order
+        # Randomize patterns
         random.shuffle(pattern_files)
-        random.shuffle(cloth_files)
 
-        # Calculate split indices
-        pattern_split = int(len(pattern_files) * TRAINING["TRAIN_RATIO"])
-        cloth_split = int(len(cloth_files) * TRAINING["TRAIN_RATIO"])
+        # For cloths, stratify by size to ensure balance
+        cloth_sizes = []
+        for cloth_file in cloth_files:
+            try:
+                # Extract dimensions from filename
+                filename = os.path.basename(cloth_file)
+                width, height = self.cloth_module.extract_dimensions_from_filename(
+                    filename
+                )
+                if width and height:
+                    area = width * height
+                    cloth_sizes.append(
+                        {
+                            "file": cloth_file,
+                            "area": area,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                else:
+                    # If can't extract dimensions, assign to medium category
+                    cloth_sizes.append(
+                        {"file": cloth_file, "area": 1000, "width": 0, "height": 0}
+                    )
+            except Exception:
+                cloth_sizes.append(
+                    {"file": cloth_file, "area": 1000, "width": 0, "height": 0}
+                )
+
+        # Sort cloths by area
+        cloth_sizes.sort(key=lambda x: x["area"])
+
+        # Split into size categories (small, medium, large)
+        n_cloths = len(cloth_sizes)
+        small_cloths = cloth_sizes[: n_cloths // 3]  # Smallest 33%
+        large_cloths = cloth_sizes[2 * n_cloths // 3 :]  # Largest 33%
+        medium_cloths = cloth_sizes[n_cloths // 3 : 2 * n_cloths // 3]  # Middle 34%
+
+        # Calculate split ratios for each category
+        train_ratio = TRAINING["TRAIN_RATIO"]
+
+        def split_category(cloths_list):
+            """Split a category into train/test maintaining ratio"""
+            split_idx = int(len(cloths_list) * train_ratio)
+            train = [c["file"] for c in cloths_list[:split_idx]]
+            test = [c["file"] for c in cloths_list[split_idx:]]
+            return train, test
+
+        # Split each category
+        small_train, small_test = split_category(small_cloths)
+        medium_train, medium_test = split_category(medium_cloths)
+        large_train, large_test = split_category(large_cloths)
+
+        # Combine splits
+        cloth_train = small_train + medium_train + large_train
+        cloth_test = small_test + medium_test + large_test
+
+        # Shuffle final lists to mix sizes within each split
+        random.shuffle(cloth_train)
+        random.shuffle(cloth_test)
+
+        # Calculate pattern split
+        pattern_split = int(len(pattern_files) * train_ratio)
 
         # Create split data
         split_data = {
             "pattern_train": pattern_files[:pattern_split],
             "pattern_test": pattern_files[pattern_split:],
-            "cloth_train": cloth_files[:cloth_split],
-            "cloth_test": cloth_files[cloth_split:],
+            "cloth_train": cloth_train,
+            "cloth_test": cloth_test,
             "timestamp": datetime.now().isoformat(),
+            "split_info": {
+                "total_cloths": n_cloths,
+                "train_cloths": len(cloth_train),
+                "test_cloths": len(cloth_test),
+                "small_train": len(small_train),
+                "small_test": len(small_test),
+                "medium_train": len(medium_train),
+                "medium_test": len(medium_test),
+                "large_train": len(large_train),
+                "large_test": len(large_test),
+            },
         }
 
         # Save split info
@@ -189,9 +260,14 @@ class CuttingEdgeSystem:
             json.dump(split_data, f, indent=2)
 
         logger.info(
-            f"Data split created: {pattern_split}/{len(pattern_files)} patterns, "
-            f"{cloth_split}/{len(cloth_files)} cloths for training"
+            f"Balanced data split created: {pattern_split}/{len(pattern_files)} patterns, "
+            f"{len(cloth_train)}/{len(cloth_files)} cloths for training"
         )
+        logger.info(f"  Small cloths: {len(small_train)} train, {len(small_test)} test")
+        logger.info(
+            f"  Medium cloths: {len(medium_train)} train, {len(medium_test)} test"
+        )
+        logger.info(f"  Large cloths: {len(large_train)} train, {len(large_test)} test")
 
         return split_data
 
@@ -544,6 +620,228 @@ class CuttingEdgeSystem:
 
         return test_results
 
+    def save_all_results(self, all_results: List[Dict]):
+        """
+        Save multiple fitting results to a JSON file.
+        """
+        # Create serializable results
+        serializable_results = []
+        for i, result in enumerate(all_results):
+            serializable_result = {
+                "cloth_index": i + 1,
+                "timestamp": datetime.now().isoformat(),
+                "patterns_total": result["patterns_total"],
+                "patterns_placed": result["patterns_placed"],
+                "utilization_percentage": result["utilization_percentage"],
+                "success_rate": result["success_rate"],
+                "total_pattern_area": result["total_pattern_area"],
+                "waste_area": result["waste_area"],
+                "cloth_dimensions": result["cloth_dimensions"],
+                "cloth_usable_area": result["cloth_usable_area"],
+                "visualization_path": result.get("visualization_path"),
+                "cloth_analysis_path": result.get("cloth_analysis_path"),
+                "cloth_path": result.get("cloth_path"),
+            }
+            serializable_results.append(serializable_result)
+
+        # Save to file
+        results_file = self.output_dir / "all_cloths_max_patterns_results.json"
+        with open(results_file, "w") as f:
+            json.dump(serializable_results, f, indent=2)
+
+        logger.info(f"All results saved to {results_file}")
+
+    def run_all_cloths_max_patterns(self, max_patterns_per_cloth: int = 50):
+        """
+        Process all cloth images and fit as many patterns as possible on each.
+        Shows only successfully placed patterns in visualizations.
+        """
+        logger.info("=== ALL CLOTHS - MAX PATTERNS MODE ===")
+
+        # Scan for images
+        pattern_files, cloth_files = self.scan_images()
+
+        if not pattern_files or not cloth_files:
+            logger.error("No images found. Please add pattern and cloth images.")
+            return
+
+        logger.info(
+            f"Processing {len(cloth_files)} cloth images with up to {max_patterns_per_cloth} patterns each"
+        )
+
+        # Load models once
+        self.pattern_module.load_model()
+        self.cloth_module.load_model()
+        self.fitting_module.load_model()
+
+        # Process each cloth
+        all_results = []
+        for i, cloth_file in enumerate(cloth_files):
+            logger.info(
+                f"\n--- Processing cloth {i + 1}/{len(cloth_files)}: {os.path.basename(cloth_file)} ---"
+            )
+
+            try:
+                # Process cloth
+                cloth = self.process_cloth(cloth_file)
+
+                # Select patterns that might fit this cloth
+                suitable_patterns = self.select_patterns_for_cloth(
+                    pattern_files, cloth, max_patterns_per_cloth
+                )
+
+                if not suitable_patterns:
+                    logger.warning(
+                        f"No suitable patterns found for {os.path.basename(cloth_file)}"
+                    )
+                    continue
+
+                logger.info(f"Selected {len(suitable_patterns)} patterns for fitting")
+
+                # Process patterns
+                patterns = self.process_patterns(suitable_patterns)
+
+                if not patterns:
+                    logger.warning(
+                        f"No valid patterns processed for {os.path.basename(cloth_file)}"
+                    )
+                    continue
+
+                # Perform fitting
+                result = self.fitting_module.fit_patterns(patterns, cloth)
+
+                # Generate visualization with only successful patterns
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                viz_path = (
+                    self.output_dir
+                    / f"max_fit_{i + 1:02d}_{os.path.splitext(os.path.basename(cloth_file))[0]}_{timestamp}.png"
+                )
+
+                # Get only successfully placed patterns for visualization
+                successful_patterns = []
+                for j, placed_pattern in enumerate(result.get("placed_patterns", [])):
+                    if placed_pattern.get("placed", False):
+                        # Find the corresponding pattern
+                        pattern_idx = placed_pattern.get("pattern_index", j)
+                        if pattern_idx < len(patterns):
+                            successful_patterns.append(patterns[pattern_idx])
+
+                # Visualize only successful placements
+                if successful_patterns:
+                    self.fitting_module.visualize(
+                        result, successful_patterns, cloth, str(viz_path)
+                    )
+                else:
+                    logger.warning(
+                        f"No patterns successfully placed on {os.path.basename(cloth_file)}"
+                    )
+                    continue
+
+                # Also visualize cloth analysis
+                cloth_viz_path = (
+                    self.output_dir
+                    / f"cloth_analysis_{i + 1:02d}_{os.path.splitext(os.path.basename(cloth_file))[0]}_{timestamp}.png"
+                )
+                self.cloth_module.visualize(cloth, str(cloth_viz_path))
+
+                # Add paths to result
+                result["visualization_path"] = str(viz_path)
+                result["cloth_analysis_path"] = str(cloth_viz_path)
+                result["cloth_path"] = cloth_file
+                result["pattern_paths"] = suitable_patterns
+
+                # Display metrics
+                logger.info(f"Cloth {i + 1} Results:")
+                logger.info(
+                    f"  Patterns placed: {result['patterns_placed']}/{result['patterns_total']}"
+                )
+                logger.info(
+                    f"  Material utilization: {result['utilization_percentage']:.1f}%"
+                )
+                logger.info(f"  Waste area: {result['waste_area']:.1f} cm²")
+                logger.info(f"  Success rate: {result['success_rate']:.1f}%")
+
+                all_results.append(result)
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to process cloth {os.path.basename(cloth_file)}: {e}"
+                )
+                continue
+
+        # Save all results
+        if all_results:
+            self.save_all_results(all_results)
+
+            # Summary statistics
+            total_patterns = sum(r["patterns_total"] for r in all_results)
+            total_placed = sum(r["patterns_placed"] for r in all_results)
+            avg_utilization = sum(
+                r["utilization_percentage"] for r in all_results
+            ) / len(all_results)
+
+            logger.info("\n" + "=" * 60)
+            logger.info("ALL CLOTHS PROCESSING SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Cloths processed: {len(all_results)}/{len(cloth_files)}")
+            logger.info(f"Total patterns attempted: {total_patterns}")
+            logger.info(f"Total patterns placed: {total_placed}")
+            logger.info(
+                f"Overall success rate: {100 * total_placed / total_patterns:.1f}%"
+            )
+            logger.info(f"Average utilization: {avg_utilization:.1f}%")
+            logger.info("=" * 60)
+
+        return all_results
+
+    def select_patterns_for_cloth(
+        self, pattern_files: List[str], cloth: ClothMaterial, max_patterns: int
+    ) -> List[str]:
+        """
+        Select patterns that are likely to fit on the given cloth.
+        Prioritizes smaller patterns first to maximize count.
+        """
+        # Get cloth dimensions
+        cloth_width = cloth.width
+        cloth_height = cloth.height
+        cloth_area = cloth_width * cloth_height
+
+        # Calculate pattern areas and sort by size (smallest first)
+        pattern_info = []
+        for pattern_file in pattern_files:
+            try:
+                filename = os.path.basename(pattern_file)
+                width, height = self.pattern_module.extract_dimensions_from_filename(
+                    filename
+                )
+                if width and height:
+                    pattern_area = width * height
+                    # Only include patterns that are smaller than the cloth
+                    if (
+                        pattern_area < cloth_area * 0.5
+                    ):  # Pattern should be less than half the cloth area
+                        pattern_info.append(
+                            {
+                                "file": pattern_file,
+                                "area": pattern_area,
+                                "width": width,
+                                "height": height,
+                            }
+                        )
+            except Exception:
+                continue
+
+        # Sort by area (smallest first) to maximize count
+        pattern_info.sort(key=lambda x: x["area"])
+
+        # Select patterns up to max_patterns
+        selected_patterns = [p["file"] for p in pattern_info[:max_patterns]]
+
+        logger.info(
+            f"Selected {len(selected_patterns)} patterns (smallest first) for {cloth_width}x{cloth_height}cm cloth"
+        )
+        return selected_patterns
+
     def run_demo(self, num_patterns: int = 3):
         """
         Run a demonstration with automatically selected patterns and cloth.
@@ -675,9 +973,9 @@ def main():
     # Mode selection
     parser.add_argument(
         "--mode",
-        choices=["demo", "train", "eval", "fit"],
+        choices=["demo", "train", "eval", "fit", "all_cloths"],
         default="demo",
-        help="Operation mode: demo, train, eval, or fit",
+        help="Operation mode: demo, train, eval, fit, or all_cloths",
     )
 
     # Pattern and cloth selection
@@ -691,6 +989,14 @@ def main():
         type=int,
         default=3,
         help="Number of patterns to use in demo mode",
+    )
+
+    # All cloths mode options
+    parser.add_argument(
+        "--max_patterns_per_cloth",
+        type=int,
+        default=50,
+        help="Maximum patterns to attempt fitting on each cloth",
     )
 
     # Training options
@@ -765,6 +1071,10 @@ def main():
 
         # Run fitting task
         system.run_fitting_task(pattern_paths, cloth_path)
+
+    elif args.mode == "all_cloths":
+        # All cloths mode - maximize pattern fitting
+        system.run_all_cloths_max_patterns(args.max_patterns_per_cloth)
 
     logger.info("\nProcessing complete")
 

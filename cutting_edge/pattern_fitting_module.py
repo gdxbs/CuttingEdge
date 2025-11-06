@@ -779,10 +779,18 @@ class PatternFittingModule:
         # Get cloth polygon
         cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
 
-        # Draw cloth boundary
+        # Draw cloth boundary with high visibility
         x, y = cloth_poly.exterior.xy
-        ax.fill(x, y, color="lightgray", alpha=0.3, label="Cloth material")
-        ax.plot(x, y, color="black", linewidth=1)
+        ax.fill(
+            x,
+            y,
+            color="lightblue",
+            alpha=0.4,
+            label="Cloth material",
+            edgecolor="navy",
+            linewidth=3,
+        )
+        ax.plot(x, y, color="navy", linewidth=3)
 
         # Draw defects with high visibility and labels
         for i, defect in enumerate(defect_polys):
@@ -825,23 +833,24 @@ class PatternFittingModule:
             )
 
         # Draw placed patterns with different colors
-        colors = plt.cm.get_cmap("rainbow")(np.linspace(0, 1, len(patterns)))
+        # Only use colors for successfully placed patterns
+        placed_patterns = result["placed_patterns"]
+        colors = plt.cm.get_cmap("rainbow")(np.linspace(0, 1, len(placed_patterns)))
 
-        for i, placement in enumerate(result["placed_patterns"]):
+        for i, placement in enumerate(placed_patterns):
             # Get pattern polygon
             pattern_poly = placement.placement_polygon
             x, y = pattern_poly.exterior.xy
 
             # Create patch
-            color_idx = patterns.index(placement.pattern)
             ax.fill(
                 x,
                 y,
-                color=colors[color_idx],
+                color=colors[i],
                 alpha=0.7,
                 label=f"{placement.pattern.pattern_type}" if i == 0 else "",
             )
-            ax.plot(x, y, color="black", linewidth=1)
+            ax.plot(x, y, color="black", linewidth=2)
 
             # Add label
             centroid = pattern_poly.centroid
@@ -856,46 +865,13 @@ class PatternFittingModule:
                 ha="center",
                 va="center",
                 fontsize=VISUALIZATION["FONT_SIZE"],
-                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.7},
+                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.8},
             )
 
-        # Draw failed patterns (if any)
-        if result["failed_patterns"]:
-            # Draw at the side
-            offset_x = cloth.width + 20
-            offset_y = 20
-
-            for pattern in result["failed_patterns"]:
-                # Draw actual contour
-                points = pattern.contour.squeeze().astype(float)
-                polygon = Polygon(points)
-                x, y = polygon.exterior.xy
-
-                ax.fill(
-                    x,
-                    y,
-                    color="red",
-                    alpha=0.5,
-                )
-                ax.plot(x, y, color="black", linewidth=1)
-
-                # Add label
-                centroid = polygon.centroid
-                ax.text(
-                    centroid.x + offset_x,
-                    centroid.y + offset_y,
-                    f"{pattern.name}\n(failed)",
-                    ha="center",
-                    va="center",
-                    color="white",
-                    fontsize=VISUALIZATION["FONT_SIZE"] - 2,
-                )
-
-                offset_y += pattern.height + 10
-
-        # Set axis properties
-        ax.set_xlim(-10, cloth.width * 1.5)
-        ax.set_ylim(-10, cloth.height * 1.1)
+        # Set axis properties to focus on cloth area
+        margin = 20
+        ax.set_xlim(-margin, cloth.width + margin)
+        ax.set_ylim(-margin, cloth.height + margin)
         ax.set_aspect("equal")
         ax.invert_yaxis()  # To match image coordinates
 
@@ -911,7 +887,20 @@ class PatternFittingModule:
 
         # Add grid and legend
         ax.grid(alpha=0.3)
-        ax.legend(loc="upper right")
+        if placed_patterns:
+            ax.legend(loc="upper right", fontsize=10, framealpha=0.9)
+        else:
+            # No patterns placed, just show cloth
+            ax.text(
+                cloth.width / 2,
+                cloth.height / 2,
+                "No patterns successfully placed",
+                ha="center",
+                va="center",
+                fontsize=14,
+                color="red",
+                bbox={"boxstyle": "round,pad=0.5", "facecolor": "yellow", "alpha": 0.8},
+            )
 
         # Save figure
         plt.tight_layout()
