@@ -336,12 +336,14 @@ class ClothRecognitionModule:
 
         # 1. HOLES - Very dark areas (missing fabric, deep holes)
         #    Use adaptive threshold based on cloth statistics
-        dark_threshold = max(10, int(mean_intensity - 2 * std_intensity))
+        #    Use 3 std devs to be more conservative and reduce false positives
+        dark_threshold = max(5, int(mean_intensity - 3 * std_intensity))
         _, holes = cv2.threshold(cloth_only, dark_threshold, 255, cv2.THRESH_BINARY_INV)
 
         # 2. STAINS - Areas with significantly different intensity
         #    Detect both darker and brighter anomalies
-        bright_threshold = min(245, int(mean_intensity + 1.5 * std_intensity))
+        #    Use 2.5 std devs for brighter areas to be more conservative
+        bright_threshold = min(250, int(mean_intensity + 2.5 * std_intensity))
         _, bright_stains = cv2.threshold(
             cloth_only, bright_threshold, 255, cv2.THRESH_BINARY
         )
