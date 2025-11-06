@@ -292,16 +292,24 @@ class ClothRecognitionModule:
         """
         Enhanced color-based segmentation for cloth and defects.
         Detects holes (missing areas), stains (color variations), and edge defects.
+
+        This method identifies three types of defects:
+        1. Holes - Dark areas or missing fabric (detected via thresholding)
+        2. Stains - Color/brightness variations (detected via statistical analysis)
+        3. Edge defects - Tears or irregular edges (detected via gradient analysis)
         """
+        h, w = img.shape[:2]
+
         # Convert to HSV for better color-based segmentation
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Create cloth mask based on HSV ranges
+        # Create cloth mask based on HSV ranges (separates cloth from background)
         lower = np.array(CLOTH["HSV_LOWER"])
         upper = np.array(CLOTH["HSV_UPPER"])
         cloth_mask = cv2.inRange(hsv, lower, upper)
 
-        # Morphological operations to clean up
+        # Morphological operations to clean up cloth boundary
         kernel = np.ones(
             (CLOTH["MORPH_KERNEL_SIZE"], CLOTH["MORPH_KERNEL_SIZE"]), np.uint8
         )
@@ -310,34 +318,127 @@ class ClothRecognitionModule:
         )
         cloth_mask = cv2.morphologyEx(cloth_mask, cv2.MORPH_OPEN, kernel)
 
-        # Enhanced defect detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # =========================================================================
+        # ENHANCED DEFECT DETECTION
+        # =========================================================================
 
-        # 1. Dark spots (holes, deep stains)
-        _, dark_spots = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
+        # Extract only the cloth region for defect analysis
+        cloth_only = cv2.bitwise_and(gray, gray, mask=cloth_mask)
 
-        # 2. Bright spots (stains, discolorations)
-        _, bright_spots = cv2.threshold(gray, 225, 255, cv2.THRESH_BINARY)
+        # Calculate mean and std of cloth region for adaptive thresholding
+        cloth_pixels = cloth_only[cloth_mask > 0]
+        if cloth_pixels.size > 0:
+            mean_intensity = float(np.mean(cloth_pixels))  # type: ignore
+            std_intensity = float(np.std(cloth_pixels))  # type: ignore
+        else:
+            mean_intensity = 127.0
+            std_intensity = 30.0
 
-        # 3. Edge defects (using gradient detection)
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-        _, edge_defects = cv2.threshold(
-            gradient_magnitude.astype(np.uint8), 50, 255, cv2.THRESH_BINARY
+        # 1. HOLES - Very dark areas (missing fabric, deep holes)
+        #    Use adaptive threshold based on cloth statistics
+        dark_threshold = max(10, int(mean_intensity - 2 * std_intensity))
+        _, holes = cv2.threshold(cloth_only, dark_threshold, 255, cv2.THRESH_BINARY_INV)
+
+        # 2. STAINS - Areas with significantly different intensity
+        #    Detect both darker and brighter anomalies
+        bright_threshold = min(245, int(mean_intensity + 1.5 * std_intensity))
+        _, bright_stains = cv2.threshold(
+            cloth_only, bright_threshold, 255, cv2.THRESH_BINARY
         )
 
-        # Combine all defect types
-        defect_mask = cv2.bitwise_or(dark_spots, bright_spots)
-        defect_mask = cv2.bitwise_or(defect_mask, edge_defects)
+        # Combine holes and stains
+        intensity_defects = cv2.bitwise_or(holes, bright_stains)
 
-        # Only defects within cloth boundary
+        # 3. COLOR VARIATIONS - Detect stains with different colors
+        #    Use color variance in the HSV space
+        hsv_cloth = cv2.bitwise_and(hsv, hsv, mask=cloth_mask)
+
+        # Calculate color statistics
+        hue = hsv_cloth[:, :, 0]
+        sat = hsv_cloth[:, :, 1]
+
+        # Areas with unusual saturation are likely stains
+        sat_cloth = sat[cloth_mask > 0]
+        if sat_cloth.size > 0:
+            mean_sat = float(np.mean(sat_cloth))  # type: ignore
+            std_sat = float(np.std(sat_cloth))  # type: ignore
+
+            # Detect areas with very different saturation
+            sat_lower = max(0, int(mean_sat - 2 * std_sat))
+            sat_upper = min(255, int(mean_sat + 2 * std_sat))
+            color_defects = cv2.bitwise_not(cv2.inRange(sat, sat_lower, sat_upper))  # type: ignore
+            color_defects = cv2.bitwise_and(color_defects, cloth_mask)
+        else:
+            color_defects = np.zeros_like(gray)
+
+        # 4. EDGE DEFECTS & TEARS - Using gradient detection
+        #    High gradient values indicate tears or frayed edges
+        sobelx = cv2.Sobel(cloth_only, cv2.CV_64F, 1, 0, ksize=5)
+        sobely = cv2.Sobel(cloth_only, cv2.CV_64F, 0, 1, ksize=5)
+        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+
+        # Normalize gradient
+        if gradient_magnitude.max() > 0:
+            gradient_magnitude = (
+                gradient_magnitude / gradient_magnitude.max() * 255
+            ).astype(np.uint8)
+        else:
+            gradient_magnitude = gradient_magnitude.astype(np.uint8)
+
+        # Detect strong edges (potential tears or holes)
+        _, edge_defects = cv2.threshold(gradient_magnitude, 80, 255, cv2.THRESH_BINARY)
+
+        # 5. TEXTURE ANOMALIES - Using local variance
+        #    Areas with very different texture from surrounding cloth
+        # Calculate local standard deviation using box filter
+        cloth_float = cloth_only.astype(np.float32)
+        mean_local = cv2.boxFilter(cloth_float, cv2.CV_32F, (15, 15))  # type: ignore
+        mean_sqr_local = cv2.boxFilter(np.square(cloth_float), cv2.CV_32F, (15, 15))  # type: ignore
+        variance_local = mean_sqr_local - mean_local * mean_local
+        variance_local[variance_local < 0] = 0  # Remove numerical errors
+        std_local = np.sqrt(variance_local).astype(np.uint8)
+
+        # Areas with very high or low local variation are anomalies
+        std_local_cloth = std_local[cloth_mask > 0]
+        texture_mean = (
+            float(np.mean(std_local_cloth)) if std_local_cloth.size > 0 else 10.0
+        )  # type: ignore
+        _, texture_defects = cv2.threshold(
+            std_local, int(texture_mean * 2.5), 255, cv2.THRESH_BINARY
+        )
+        _, texture_defects = cv2.threshold(
+            std_local, int(texture_mean * 2.5), 255, cv2.THRESH_BINARY
+        )
+
+        # =========================================================================
+        # COMBINE ALL DEFECT TYPES
+        # =========================================================================
+
+        # Combine all defect detection methods
+        defect_mask = cv2.bitwise_or(intensity_defects, color_defects)
+        defect_mask = cv2.bitwise_or(defect_mask, edge_defects)
+        defect_mask = cv2.bitwise_or(defect_mask, texture_defects)
+
+        # Only keep defects within cloth boundary
         defect_mask = cv2.bitwise_and(defect_mask, cloth_mask)
 
-        # Clean up defect mask
-        defect_mask = cv2.morphologyEx(defect_mask, cv2.MORPH_OPEN, kernel)
+        # Clean up defect mask with morphological operations
+        # Small kernel to remove noise but preserve defect detail
+        small_kernel = np.ones((3, 3), np.uint8)
+        defect_mask = cv2.morphologyEx(defect_mask, cv2.MORPH_OPEN, small_kernel)
+
+        # Close small gaps in defects
         defect_mask = cv2.morphologyEx(
-            defect_mask, cv2.MORPH_CLOSE, kernel, iterations=2
+            defect_mask, cv2.MORPH_CLOSE, kernel, iterations=1
+        )
+
+        # Dilate slightly to create safety margin around defects
+        # This ensures patterns don't get placed too close to defects
+        safety_kernel = np.ones((5, 5), np.uint8)
+        defect_mask = cv2.dilate(defect_mask, safety_kernel, iterations=1)
+
+        logger.debug(
+            f"Defect detection: cloth_mask={np.sum(cloth_mask > 0)} pixels, defect_mask={np.sum(defect_mask > 0)} pixels"
         )
 
         return cloth_mask, defect_mask
@@ -465,11 +566,10 @@ class ClothRecognitionModule:
                 )
                 filtered = cv2.filter2D(gray, cv2.CV_32F, kernel)
                 mean_val = cv2.mean(filtered, mask=mask)
+                # cv2.mean returns a tuple of 4 values (one per channel)
                 mean_response = (
-                    float(mean_val[0])
-                    if hasattr(mean_val, "__getitem__") and len(mean_val) > 0
-                    else 0.0
-                )
+                    float(mean_val[0]) if isinstance(mean_val, tuple) else 0.0
+                )  # type: ignore
 
                 orientations.append(theta * 180 / np.pi)  # Convert to degrees
                 responses.append(mean_response)
@@ -494,6 +594,12 @@ class ClothRecognitionModule:
 
         Key concept: The filename contains PLATE dimensions (the container),
         but the actual cloth shape is detected from the image and may be irregular.
+
+        Handles:
+        - Regular rectangular cloth pieces
+        - Irregular shapes (remnants, scraps, L-shapes, etc.)
+        - Cloth with holes, stains, and edge defects
+        - Extracts exact contour boundaries for precise pattern fitting
         """
         logger.info(f"Processing cloth image: {image_path}")
 
@@ -561,10 +667,25 @@ class ClothRecognitionModule:
             cloth_rect = cv2.boundingRect(contour)
             cloth_width = cloth_rect[2]
             cloth_height = cloth_rect[3]
+
+            # Check if cloth shape is irregular (not a simple rectangle)
+            # Compare actual contour area to bounding box area
+            bbox_area = cloth_width * cloth_height
+            if total_area > 0 and bbox_area > 0:
+                shape_complexity = total_area / bbox_area
+                if shape_complexity < 0.85:
+                    logger.info(
+                        f"Detected IRREGULAR cloth shape (complexity: {shape_complexity:.2f})"
+                    )
+                else:
+                    logger.info(f"Detected regular rectangular cloth shape")
         else:
             # Fallback to plate dimensions if no contour detected
             cloth_width = plate_width
             cloth_height = plate_height
+            logger.warning(
+                "No cloth contour detected, using plate dimensions as fallback"
+            )
 
         # Detect material type and properties
         img = cv2.imread(image_path)
@@ -596,7 +717,10 @@ class ClothRecognitionModule:
         logger.info(f"PLATE: {plate_width:.1f}x{plate_height:.1f} cm")
         logger.info(f"CLOTH: {cloth_type}, {cloth_width:.1f}x{cloth_height:.1f} cm")
         logger.info(
-            f"Actual cloth area: {total_area:.1f} cm², usable: {usable_area:.1f} cm² ({len(defects)} defects)"
+            f"Actual cloth area: {total_area:.1f} cm², usable: {usable_area:.1f} cm²"
+        )
+        logger.info(
+            f"Detected {len(defects)} defects (holes/stains) that patterns will avoid"
         )
 
         return cloth
@@ -626,16 +750,28 @@ class ClothRecognitionModule:
             )
             ax1.plot(contour[:, 0], contour[:, 1], "b-", linewidth=2)
 
-        # Draw defects
+        # Draw defects with high visibility
         for i, defect in enumerate(cloth.defects or []):
             defect_points = defect.squeeze()
             if len(defect_points.shape) > 1:
+                # Fill with red
                 ax1.fill(
                     defect_points[:, 0],
                     defect_points[:, 1],
                     color="red",
-                    alpha=0.7,
-                    label="Defect" if i == 0 else "",
+                    alpha=0.8,
+                    edgecolor="darkred",
+                    linewidth=2,
+                    label="Defects (holes/stains)" if i == 0 else "",
+                )
+                # Add crosshatch pattern to make defects more visible
+                ax1.fill(
+                    defect_points[:, 0],
+                    defect_points[:, 1],
+                    color="none",
+                    edgecolor="darkred",
+                    linewidth=2,
+                    hatch="xxx",
                 )
 
         ax1.legend()

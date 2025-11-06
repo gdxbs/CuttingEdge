@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -194,13 +195,22 @@ class PatternFittingModule:
     ) -> Tuple[Polygon, List[Polygon]]:
         """
         Create shapely Polygons for cloth and defects.
+
+        Supports:
+        - Regular rectangular cloth pieces
+        - Irregular shapes (remnants, L-shapes, T-shapes, curved edges)
+        - Cloth with holes and defects (creates exclusion zones)
         """
-        # Create cloth polygon
+        # Create cloth polygon from actual contour (supports irregular shapes)
         if cloth.contour is not None and len(cloth.contour) > 2:
-            # Use actual contour
+            # Use actual contour for precise shape representation
+            # This handles irregular shapes like remnants, scraps, etc.
             cloth_poly = Polygon(cloth.contour.squeeze())
+            logger.debug(
+                f"Created cloth polygon from contour: {len(cloth.contour)} points"
+            )
         else:
-            # Fallback to rectangle
+            # Fallback to rectangle if no contour available
             cloth_poly = Polygon(
                 [
                     (0, 0),
@@ -208,6 +218,9 @@ class PatternFittingModule:
                     (cloth.width, cloth.height),
                     (0, cloth.height),
                 ]
+            )
+            logger.debug(
+                f"Created rectangular cloth polygon: {cloth.width}x{cloth.height} cm"
             )
 
         # Create defect polygons
@@ -252,9 +265,13 @@ class PatternFittingModule:
                 ):  # More than 1% overlap
                     return False, coverage
 
-        # Check for defects
-        for defect in defect_polys:
+        # Check for defects (holes, stains, tears)
+        for i, defect in enumerate(defect_polys):
             if pattern_poly.intersects(defect):
+                # Pattern would overlap with a defect - reject placement
+                logger.debug(
+                    f"Placement rejected: pattern intersects with defect #{i + 1}"
+                )
                 return False, coverage
 
         return True, coverage
@@ -767,10 +784,45 @@ class PatternFittingModule:
         ax.fill(x, y, color="lightgray", alpha=0.3, label="Cloth material")
         ax.plot(x, y, color="black", linewidth=1)
 
-        # Draw defects
+        # Draw defects with high visibility and labels
         for i, defect in enumerate(defect_polys):
             x, y = defect.exterior.xy
-            ax.fill(x, y, color="red", alpha=0.5, label="Defect" if i == 0 else "")
+            # Fill with red and crosshatch pattern
+            ax.fill(
+                x,
+                y,
+                color="red",
+                alpha=0.7,
+                edgecolor="darkred",
+                linewidth=2,
+                label="Defects (avoided)" if i == 0 else "",
+            )
+            # Add crosshatch for visibility
+            ax.fill(
+                x,
+                y,
+                color="none",
+                edgecolor="darkred",
+                linewidth=1.5,
+                hatch="xxx",
+            )
+            # Add text label for each defect
+            centroid = defect.centroid
+            ax.text(
+                centroid.x,
+                centroid.y,
+                f"D{i + 1}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="white",
+                weight="bold",
+                bbox={
+                    "boxstyle": "circle,pad=0.1",
+                    "facecolor": "darkred",
+                    "alpha": 0.9,
+                },
+            )
 
         # Draw placed patterns with different colors
         colors = plt.cm.get_cmap("rainbow")(np.linspace(0, 1, len(patterns)))
@@ -885,10 +937,34 @@ class PatternFittingModule:
             f.write("CLOTH INFORMATION\n")
             f.write("-" * 60 + "\n")
             f.write(f"Type: {cloth.cloth_type}\n")
-            f.write(f"Dimensions: {cloth.width:.1f} x {cloth.height:.1f} cm\n")
+            f.write(
+                f"Dimensions (bounding box): {cloth.width:.1f} x {cloth.height:.1f} cm\n"
+            )
+
+            # Determine if cloth is irregular
+            if cloth.contour is not None and len(cloth.contour) > 4:
+                bbox_area = cloth.width * cloth.height
+                shape_ratio = cloth.total_area / bbox_area if bbox_area > 0 else 1.0
+                if shape_ratio < 0.85:
+                    f.write(
+                        f"Shape: IRREGULAR (remnant/scrap, {shape_ratio * 100:.1f}% of bounding box)\n"
+                    )
+                else:
+                    f.write(f"Shape: Regular rectangular\n")
+                f.write(f"Contour Points: {len(cloth.contour)}\n")
+            else:
+                f.write(f"Shape: Rectangular\n")
+
             f.write(f"Total Area: {cloth.total_area:.1f} cm²\n")
             f.write(f"Usable Area: {cloth.usable_area:.1f} cm²\n")
-            f.write(f"Defects: {len(cloth.defects or [])}\n\n")
+            num_defects = len(cloth.defects or [])
+            f.write(f"Defects Detected: {num_defects} (holes, stains, tears)\n")
+            if num_defects > 0 and cloth.defects is not None:
+                defect_area = sum(cv2.contourArea(d) for d in cloth.defects)  # type: ignore
+                f.write(
+                    f"Defect Area: {defect_area:.1f} cm² ({(defect_area / cloth.total_area * 100):.1f}% of total)\n"
+                )
+            f.write("\n")
 
             f.write("FITTING SUMMARY\n")
             f.write("-" * 60 + "\n")
