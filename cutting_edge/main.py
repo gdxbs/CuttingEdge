@@ -63,6 +63,75 @@ class CuttingEdgeSystem:
         logger.info("Cutting Edge System initialized")
         logger.info(f"Base directory: {self.base_dir}")
 
+    def select_suitable_cloth(
+        self, pattern_files: List[str], cloth_files: List[str]
+    ) -> Optional[str]:
+        """
+        Select a cloth that can fit the given patterns.
+        Returns the first cloth that has enough area for all patterns.
+        """
+        if not cloth_files:
+            return None
+
+        # Calculate total pattern area
+        total_pattern_area = 0
+        for pattern_file in pattern_files:
+            try:
+                # Extract dimensions from filename
+                filename = os.path.basename(pattern_file)
+                width, height = self.pattern_module.extract_dimensions_from_filename(
+                    filename
+                )
+                if width and height:
+                    total_pattern_area += width * height
+            except Exception:
+                continue
+
+        # Find cloth with enough area (at least 3x pattern area for fitting)
+        min_cloth_area = total_pattern_area * 3
+
+        for cloth_file in cloth_files:
+            try:
+                # Extract cloth dimensions
+                filename = os.path.basename(cloth_file)
+                width, height = self.cloth_module.extract_dimensions_from_filename(
+                    filename
+                )
+                if width and height:
+                    cloth_area = width * height
+                    if cloth_area >= min_cloth_area:
+                        logger.info(
+                            f"Selected cloth {filename}: {width}x{height}cm (area: {cloth_area:.0f}cm², patterns need: {total_pattern_area:.0f}cm²)"
+                        )
+                        return cloth_file
+            except Exception:
+                continue
+
+        # If no suitable cloth found, return the largest one
+        largest_cloth = None
+        max_area = 0
+        for cloth_file in cloth_files:
+            try:
+                filename = os.path.basename(cloth_file)
+                width, height = self.cloth_module.extract_dimensions_from_filename(
+                    filename
+                )
+                if width and height:
+                    cloth_area = width * height
+                    if cloth_area > max_area:
+                        max_area = cloth_area
+                        largest_cloth = cloth_file
+            except Exception:
+                continue
+
+        if largest_cloth:
+            logger.warning(
+                f"No ideal cloth found, using largest available: {os.path.basename(largest_cloth)}"
+            )
+            return largest_cloth
+
+        return None
+
     def scan_images(self) -> Tuple[List[str], List[str]]:
         """
         Scan for pattern and cloth images in the images directory.
@@ -505,9 +574,15 @@ class CuttingEdgeSystem:
             logger.error("No images available for demo")
             return
 
-        # Select patterns and cloth
+        # Select patterns
         selected_patterns = test_patterns[: min(num_patterns, len(test_patterns))]
-        selected_cloth = test_cloths[0]
+
+        # Select appropriately sized cloth for the patterns
+        selected_cloth = self.select_suitable_cloth(selected_patterns, test_cloths)
+
+        if not selected_cloth:
+            logger.error("No suitable cloth found for demo patterns")
+            return
 
         logger.info(f"Selected {len(selected_patterns)} patterns and 1 cloth for demo")
 
@@ -516,7 +591,8 @@ class CuttingEdgeSystem:
             result = self.run_fitting_task(selected_patterns, selected_cloth)
 
             # Save result metrics
-            self.save_result(result)
+            if result:
+                self.save_result(result)
 
         except Exception as e:
             logger.error(f"Demo failed: {e}")

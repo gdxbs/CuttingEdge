@@ -236,33 +236,58 @@ class PatternRecognitionModule:
             return self.extract_shape_from_svg(image_path)
 
         # Handle raster images (PNG, JPG)
-        img = cv2.imread(image_path)
+        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if img is None:
             logger.error(f"Failed to read image: {image_path}")
             return {"contour": np.array([]), "key_points": []}
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Check if image has alpha channel (transparency)
+        if len(img.shape) == 3 and img.shape[2] == 4:
+            # Use alpha channel for pattern shape extraction
+            logger.info(f"Using alpha channel for pattern shape extraction")
+            alpha = img[:, :, 3]
+            gray = alpha
+            # Alpha channel: 255 = opaque (pattern), 0 = transparent (background)
+            # Invert so pattern is white (255) and background is black (0)
+            _, binary = cv2.threshold(alpha, 127, 255, cv2.THRESH_BINARY)
+        else:
+            # Convert to grayscale for regular images
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # Apply thresholding to separate pattern from background
 
         # Apply thresholding to separate pattern from background
-        # Try adaptive thresholding first
-        try:
-            # Try Otsu thresholding first (works better for most patterns)
-            _, binary = cv2.threshold(
-                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-            )
+        if len(img.shape) == 3 and img.shape[2] == 4:
+            # Alpha channel already processed above
+            pass  # binary already set from alpha channel
+        else:
+            # Regular thresholding for images without alpha
+            try:
+                # Try Otsu thresholding first (works better for most patterns)
+                _, binary = cv2.threshold(
+                    gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+                )
 
-            # Check if Otsu gave good results (large contour)
-            contours, _ = cv2.findContours(
-                binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            if contours:
-                main_contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(main_contour)
+                # Check if Otsu gave good results (large contour)
+                contours, _ = cv2.findContours(
+                    binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                if contours:
+                    main_contour = max(contours, key=cv2.contourArea)
+                    x, y, w, h = cv2.boundingRect(main_contour)
 
-                # If Otsu found a reasonably large contour, use it
-                if w > 50 and h > 50:
-                    pass  # Keep Otsu result
+                    # If Otsu found a reasonably large contour, use it
+                    if w > 50 and h > 50:
+                        pass  # Keep Otsu result
+                    else:
+                        # Fallback to adaptive thresholding
+                        binary = cv2.adaptiveThreshold(
+                            gray,
+                            255,
+                            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                            cv2.THRESH_BINARY_INV,
+                            PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
+                            PATTERN["ADAPTIVE_THRESH_C"],
+                        )
                 else:
                     # Fallback to adaptive thresholding
                     binary = cv2.adaptiveThreshold(
@@ -273,21 +298,11 @@ class PatternRecognitionModule:
                         PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
                         PATTERN["ADAPTIVE_THRESH_C"],
                     )
-            else:
-                # Fallback to adaptive thresholding
-                binary = cv2.adaptiveThreshold(
-                    gray,
-                    255,
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY_INV,
-                    PATTERN["ADAPTIVE_THRESH_BLOCK_SIZE"],
-                    PATTERN["ADAPTIVE_THRESH_C"],
+            except Exception:
+                # Fallback to regular thresholding
+                _, binary = cv2.threshold(
+                    gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
                 )
-        except Exception:
-            # Fallback to regular thresholding
-            _, binary = cv2.threshold(
-                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-            )
 
         # Clean up with morphology operations
         kernel = np.ones(PATTERN["MORPH_KERNEL_SIZE"], np.uint8)
