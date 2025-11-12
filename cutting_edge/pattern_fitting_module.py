@@ -18,11 +18,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import cv2
 from shapely.affinity import rotate, scale, translate
 from shapely.geometry import Polygon
 
 from .cloth_recognition_module import ClothMaterial
-from .config import FITTING, SYSTEM, VISUALIZATION
+from .config import FITTING, SYSTEM, VISUALIZATION, CLOTH, PATTERN
 from .pattern_recognition_module import Pattern
 
 # Setup logging
@@ -150,12 +151,13 @@ class PatternFittingModule:
             points = pattern.contour.squeeze().astype(float)
         else:
             # Fallback to rectangle if no valid contour
+            inv_scale = 1.0 / PATTERN["PIXEL_TO_CM"]
             points = np.array(
                 [
                     [0, 0],
-                    [pattern.width, 0],
-                    [pattern.width, pattern.height],
-                    [0, pattern.height],
+                    [pattern.width * inv_scale, 0],
+                    [pattern.width * inv_scale, pattern.height * inv_scale],
+                    [0, pattern.height * inv_scale],
                 ]
             )
 
@@ -187,12 +189,13 @@ class PatternFittingModule:
             cloth_poly = Polygon(cloth.contour.squeeze())
         else:
             # Fallback to rectangle
+            inv_scale = 1.0 / CLOTH["PIXEL_TO_CM"]
             cloth_poly = Polygon(
                 [
                     (0, 0),
-                    (cloth.width, 0),
-                    (cloth.width, cloth.height),
-                    (0, cloth.height),
+                    (cloth.width * inv_scale, 0),
+                    (cloth.width * inv_scale, cloth.height * inv_scale),
+                    (0, cloth.height * inv_scale),
                 ]
             )
 
@@ -585,6 +588,31 @@ class PatternFittingModule:
                 logger.info(f"  ✗ Failed to place {pattern.name}")
 
         # Calculate metrics
+<<<<<<< Updated upstream
+=======
+        cloth_poly, _ = self.create_cloth_polygon(cloth)
+        placed_polygons = [p.placement_polygon for p in placed_patterns]
+
+        # Get pixel-to-cm scale from cloth
+        scale_x, scale_y = CLOTH["PIXEL_TO_CM"], CLOTH["PIXEL_TO_CM"]
+        if cloth.contour is not None and len(cloth.contour) > 0:
+            x_rect, y_rect, w_rect, h_rect = cv2.boundingRect(cloth.contour)
+            if w_rect > 0:
+                scale_x = cloth.width / w_rect
+            if h_rect > 0:
+                scale_y = cloth.height / h_rect
+
+        # Calculate true utilized area by intersecting placed patterns with cloth
+        utilized_area_px = 0
+        for poly in placed_polygons:
+            utilized_area_px += cloth_poly.intersection(poly).area
+
+        utilized_area = utilized_area_px * scale_x * scale_y
+
+        utilization = (utilized_area / cloth.usable_area) * 100 if cloth.usable_area > 0 else 0
+        success_rate = (len(placed_patterns) / len(patterns)) * 100 if patterns else 0
+        waste_area = cloth.usable_area - utilized_area
+>>>>>>> Stashed changes
         total_pattern_area = sum(p.pattern.area for p in placed_patterns)
         utilization = (total_pattern_area / cloth.usable_area) * 100
         success_rate = (len(placed_patterns) / len(patterns)) * 100

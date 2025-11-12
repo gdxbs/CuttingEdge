@@ -149,8 +149,35 @@ class PatternRecognitionModule:
         self.model = PatternRecognizer()
         self.model.to(self.device)
 
+<<<<<<< Updated upstream
         # Image preprocessing transforms
         self.transforms = transforms.Compose(
+=======
+        # Data augmentation and normalization for training
+        self.train_transforms = transforms.Compose(
+            [
+                transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(30),
+                transforms.ColorJitter(
+                    brightness=0.3, contrast=0.3, saturation=0.3, hue=0.2
+                ),
+                transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+                transforms.RandomResizedCrop(
+                    size=(PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"]),
+                    scale=(0.8, 1.0),
+                    ratio=(0.9, 1.1),
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=IMAGENET_NORMALIZE["mean"], std=IMAGENET_NORMALIZE["std"]
+                ),
+            ]
+        )
+
+        # Normalization for validation/testing
+        self.val_transforms = transforms.Compose(
+>>>>>>> Stashed changes
             [
                 transforms.ToPILImage(),
                 transforms.Resize((PATTERN["IMAGE_SIZE"], PATTERN["IMAGE_SIZE"])),
@@ -352,6 +379,7 @@ class PatternRecognitionModule:
         if width is None or height is None:
             width, height = self.estimate_dimensions(contour, pattern_type)
 
+<<<<<<< Updated upstream
         # Calculate area
         if len(contour) > 2:
             # Use contour area
@@ -360,6 +388,10 @@ class PatternRecognitionModule:
         else:
             # Fallback to rectangular area
             area = width * height
+=======
+        # Calculate area from dimensions, not contour
+        area = width * height if width is not None and height is not None else 0.0
+>>>>>>> Stashed changes
 
         # Create Pattern object
         pattern = Pattern(
@@ -425,8 +457,92 @@ class PatternRecognitionModule:
             f"Training pattern recognition model with {len(train_images)} images"
         )
 
+<<<<<<< Updated upstream
         # TODO: Implement proper training
         # For now, just save the model
         self.save_model()
+=======
+        # Create datasets and dataloaders
+        train_dataset = PatternDataset(train_images, self.train_transforms, self.pattern_types)
+        val_dataset = PatternDataset(val_images, self.val_transforms, self.pattern_types)
+
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False
+        )
+
+        # Loss functions and optimizer
+        criterion_type = nn.CrossEntropyLoss(label_smoothing=0.1)
+        criterion_dims = nn.MSELoss()
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=0.01, steps_per_epoch=len(train_loader), epochs=epochs
+        )
+
+        best_val_loss = float("inf")
+        history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
+
+        for epoch in range(epochs):
+            self.model.train()
+            running_loss = 0.0
+            for images, labels, dims in train_loader:
+                images, labels, dims = (
+                    images.to(self.device),
+                    labels.to(self.device),
+                    dims.to(self.device),
+                )
+
+                optimizer.zero_grad()
+                outputs = self.model(images)
+                loss_type = criterion_type(outputs["pattern_type"], labels)
+                loss_dims = criterion_dims(outputs["dimensions"], dims)
+                loss = loss_type + 0.5 * loss_dims
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                running_loss += loss.item()
+
+            train_loss = running_loss / len(train_loader)
+            history["train_loss"].append(train_loss)
+
+            # Validation
+            self.model.eval()
+            val_loss = 0.0
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for images, labels, dims in val_loader:
+                    images, labels, dims = (
+                        images.to(self.device),
+                        labels.to(self.device),
+                        dims.to(self.device),
+                    )
+                    outputs = self.model(images)
+                    loss_type = criterion_type(outputs["pattern_type"], labels)
+                    loss_dims = criterion_dims(outputs["dimensions"], dims)
+                    loss = loss_type + loss_dims
+                    val_loss += loss.item()
+
+                    _, predicted = torch.max(outputs["pattern_type"].data, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+
+            val_loss /= len(val_loader)
+            val_accuracy = 100 * correct / total
+            history["val_loss"].append(val_loss)
+            history["val_accuracy"].append(val_accuracy)
+
+            logger.info(
+                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.2f}%"
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                self.save_model()
+
+        return history
+>>>>>>> Stashed changes
 
         return {"status": "success", "message": "Model saved", "epochs_completed": 0}

@@ -151,7 +151,7 @@ class ClothRecognitionModule:
         if self.use_unet:
             self.model = UNetSegmenter(
                 in_channels=CLOTH["UNET_IN_CHANNELS"],
-                out_channels=CLOTH["UNET_OUT_CHANNELS"],
+                out_channels=1,
             )
             self.model.to(self.device)
 
@@ -209,27 +209,22 @@ class ClothRecognitionModule:
                 )
                 img_tensor = img_tensor.unsqueeze(0).to(self.device)
 
-                # Get segmentation masks
+                # Get segmentation mask for cloth
                 self.model.eval()
                 with torch.no_grad():
                     output = self.model(img_tensor)
 
-                # Convert output to masks (cloth and defects)
-                output = F.softmax(output, dim=1)
-                cloth_mask = output[:, 0].cpu().numpy()[0]
-                defect_mask = output[:, 1].cpu().numpy()[0]
-
-                # Resize masks to original image size
+                # Convert single-channel output to a binary mask
+                cloth_mask = torch.sigmoid(output).cpu().numpy()[0, 0]
                 cloth_mask = cv2.resize((cloth_mask * 255).astype(np.uint8), (w, h))
-                defect_mask = cv2.resize((defect_mask * 255).astype(np.uint8), (w, h))
-
-                # Threshold to get binary masks
                 _, cloth_binary = cv2.threshold(
                     cloth_mask, CLOTH["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY
                 )
-                _, defect_binary = cv2.threshold(
-                    defect_mask, CLOTH["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY
-                )
+
+                # For defects, we'll still use the reliable color-based method
+                _, defect_binary = self.color_based_segmentation(img)
+                defect_binary = cv2.bitwise_and(defect_binary, cloth_binary)
+
 
             except Exception as e:
                 logger.warning(
