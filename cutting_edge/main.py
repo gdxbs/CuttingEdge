@@ -371,7 +371,13 @@ class CuttingEdgeSystem:
         # Generate visualization
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         viz_path = self.output_dir / f"fitting_result_{timestamp}.png"
-        self.fitting_module.visualize(result, patterns, cloth, str(viz_path))
+        # Pass cloth name if available
+        cloth_name = getattr(cloth, "source_path", None)
+        if cloth_name:
+            cloth_name = os.path.basename(cloth_name)
+        self.fitting_module.visualize(
+            result, patterns, cloth, str(viz_path), cloth_image_name=cloth_name
+        )
 
         # Add visualization path to result
         result["visualization_path"] = str(viz_path)
@@ -912,8 +918,14 @@ class CuttingEdgeSystem:
             viz_path = os.path.join(eval_images_dir, viz_filename)
 
             try:
+                # Pass cloth image name for display
+                cloth_name = os.path.basename(sample["cloth"])
                 self.fitting_module.visualize(
-                    result, patterns, cloth, output_path=viz_path
+                    result,
+                    patterns,
+                    cloth,
+                    output_path=viz_path,
+                    cloth_image_name=cloth_name,
                 )
                 logger.info(f"  Saved visualization to {viz_filename}")
             except Exception as e:
@@ -1113,8 +1125,14 @@ class CuttingEdgeSystem:
 
                 # Visualize only successful placements
                 if successful_patterns:
+                    # Pass cloth image name for display
+                    cloth_name = os.path.basename(cloth_file)
                     self.fitting_module.visualize(
-                        result, successful_patterns, cloth, str(viz_path)
+                        result,
+                        successful_patterns,
+                        cloth,
+                        str(viz_path),
+                        cloth_image_name=cloth_name,
                     )
                 else:
                     logger.warning(

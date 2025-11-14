@@ -479,6 +479,66 @@ class PatternFittingModule:
             "area": area,
         }
 
+    def _get_rotated_dimensions(
+        self, pattern: Pattern, rotation: float
+    ) -> Tuple[float, float]:
+        """Get pattern dimensions after rotation."""
+        # For 0/180 degrees, dimensions stay the same
+        if rotation % 180 == 0:
+            return pattern.width, pattern.height
+        # For 90/270 degrees, dimensions swap
+        elif rotation % 180 == 90:
+            return pattern.height, pattern.width
+        else:
+            # For other angles, calculate bounding box
+            rad = np.radians(rotation)
+            cos_r = abs(np.cos(rad))
+            sin_r = abs(np.sin(rad))
+            new_width = pattern.width * cos_r + pattern.height * sin_r
+            new_height = pattern.width * sin_r + pattern.height * cos_r
+            return new_width, new_height
+
+    def _prefilter_patterns(
+        self, patterns: List[Pattern], cloth: ClothMaterial
+    ) -> Tuple[List[Pattern], List[Pattern]]:
+        """
+        Filter out patterns that cannot possibly fit on cloth.
+
+        Issue A fix: Prevents wasted processing time on impossible placements.
+
+        Returns:
+            (valid_patterns, invalid_patterns)
+        """
+        cloth_width, cloth_height = cloth.width, cloth.height
+
+        valid_patterns = []
+        invalid_patterns = []
+
+        for pattern in patterns:
+            # Check all possible rotations
+            can_fit = False
+            for angle in self.rotation_angles:
+                p_width, p_height = self._get_rotated_dimensions(pattern, angle)
+                if p_width <= cloth_width and p_height <= cloth_height:
+                    can_fit = True
+                    break
+
+            if can_fit:
+                valid_patterns.append(pattern)
+            else:
+                invalid_patterns.append(pattern)
+                logger.warning(
+                    f"Pattern {pattern.name} ({pattern.width:.1f}×{pattern.height:.1f} cm) "
+                    f"cannot fit on cloth ({cloth_width:.1f}×{cloth_height:.1f} cm) - FILTERED OUT"
+                )
+
+        if invalid_patterns:
+            logger.info(
+                f"Pre-filtered {len(invalid_patterns)} patterns that cannot fit on cloth"
+            )
+
+        return valid_patterns, invalid_patterns
+
     def find_best_placement(
         self,
         pattern: Pattern,
@@ -491,9 +551,15 @@ class PatternFittingModule:
         Implements algorithms from:
         [1] Jakobs (1996) - Bottom-Left-Fill
         [4] Burke et al. (2007) - No-Fit Polygon
+
+        Enhanced with:
+        - Issue F: Early stopping when excellent placement found
         """
         best_placement = None
         best_score = float("-inf")
+
+        # Issue F: Early stopping threshold
+        EXCELLENT_SCORE_THRESHOLD = 15.0  # Stop early if we find a great placement
 
         # Create cloth polygons
         cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
@@ -604,7 +670,7 @@ class PatternFittingModule:
         # Try each position
         attempts = 0
         for x, y, rotation, flipped in positions_to_try:
-            if attempts >= FITTING["MAX_ATTEMPTS"]:
+            if attempts >= self.max_attempts:
                 break
 
             # Create pattern polygon with transformation
@@ -634,6 +700,14 @@ class PatternFittingModule:
                         score=score,
                         placement_polygon=pattern_poly,
                     )
+
+                    # Issue F: Early stopping if excellent placement found
+                    if best_score > EXCELLENT_SCORE_THRESHOLD:
+                        logger.debug(
+                            f"Found excellent placement (score={best_score:.2f}), "
+                            f"stopping early after {attempts} attempts"
+                        )
+                        break
 
                     # If neural optimization is enabled, train the optimizer
                     if self.use_neural:
@@ -702,18 +776,29 @@ class PatternFittingModule:
         """
         Main method to fit multiple patterns onto a cloth.
         Returns fitting results and metrics.
+
+        Enhanced with Issue A: Pre-filtering of patterns that cannot fit.
         """
         logger.info(
             f"Fitting {len(patterns)} patterns onto {cloth.cloth_type} material "
             f"({cloth.width}x{cloth.height} cm)"
         )
 
-        # Sort patterns by area (larger patterns first)
-        sorted_patterns = sorted(patterns, key=lambda p: p.area, reverse=True)
+        # Issue A: Pre-filter patterns that cannot possibly fit
+        valid_patterns, invalid_patterns = self._prefilter_patterns(patterns, cloth)
+
+        if invalid_patterns:
+            logger.warning(
+                f"Filtered out {len(invalid_patterns)}/{len(patterns)} patterns "
+                f"that are too large for the cloth"
+            )
+
+        # Sort valid patterns by area (larger patterns first)
+        sorted_patterns = sorted(valid_patterns, key=lambda p: p.area, reverse=True)
 
         # Try to place each pattern
         placed_patterns = []
-        failed_patterns = []
+        failed_patterns = list(invalid_patterns)  # Start with pre-filtered patterns
 
         for i, pattern in enumerate(sorted_patterns):
             logger.info(
@@ -776,9 +861,17 @@ class PatternFittingModule:
         patterns: List[Pattern],
         cloth: ClothMaterial,
         output_path: str,
+        cloth_image_name: Optional[str] = None,
     ):
         """
         Create a visualization of the fitting result.
+
+        Args:
+            result: Fitting result dictionary
+            patterns: List of patterns
+            cloth: Cloth material
+            output_path: Where to save visualization
+            cloth_image_name: Name of the cloth image file (for display)
         """
         # Setup figure
         fig, ax = plt.subplots(1, 1, figsize=VISUALIZATION["FIGURE_SIZE"])
@@ -888,13 +981,15 @@ class PatternFittingModule:
         ax.set_aspect("equal")
         ax.invert_yaxis()  # To match image coordinates
 
-        # Add title with metrics
+        # Add title with metrics and cloth name
         title = "Pattern Fitting Result\n"
+        if cloth_image_name:
+            title += f"Cloth: {cloth_image_name}\n"
         title += f"Utilization: {result['utilization_percentage']:.1f}% | "
         title += f"Patterns: {result['patterns_placed']}/{result['patterns_total']} | "
-        title += f"Cloth: {cloth.cloth_type}"
+        title += f"Type: {cloth.cloth_type}"
 
-        ax.set_title(title, fontsize=14)
+        ax.set_title(title, fontsize=13, fontweight="bold")
         ax.set_xlabel("Width (cm)")
         ax.set_ylabel("Height (cm)")
 

@@ -199,13 +199,14 @@ FITTING = {
     # No-Fit Polygon parameters from [4]
     "NFP_PRECISION": 0.1,  # Precision for NFP computation in cm [4]
     # Rewards system based on multi-objective optimization from [3]
+    # Issue D: Enhanced scoring heuristics for better placement quality
     "REWARDS": {
         # Penalties/bonuses calibrated from [3] Gomes & Oliveira (2006)
         "overlap_penalty": -100,  # Heavy penalty for overlapping patterns [3]
-        "edge_bonus": 5,  # Bonus for placing near edges (reduces waste) [3]
-        "utilization_bonus": 10,  # Bonus for good material utilization [3]
-        "compactness_bonus": 7,  # Bonus for placing patterns together [1]
-        "gap_penalty": -2,  # Penalty for creating unusable gaps [3]
+        "edge_bonus": 12,  # Increased from 5 - emphasize edge placement (reduces waste) [3]
+        "utilization_bonus": 15,  # Increased from 10 - reward material efficiency [3]
+        "compactness_bonus": 5,  # Reduced from 7 - less competition with edge placement [1]
+        "gap_penalty": -5,  # Increased from -2 - stronger penalty for fragmentation [3]
         "origin_bonus": 3,  # Bonus for bottom-left placement [1]
         "grain_alignment_bonus": 8,  # Bonus for following fabric grain [5]
     },

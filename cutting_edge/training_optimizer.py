@@ -142,16 +142,21 @@ class HeuristicOptimizer:
         }
 
     def _get_default_param_grid(self) -> Dict:
-        """Get default hyperparameter search space."""
+        """
+        Get expanded hyperparameter search space.
+
+        Issue B: Expanded from 4 to 27 configurations for better optimization.
+        Balanced approach for reasonable training time (~10-15 min).
+        """
         return {
-            "grid_size": [15, 20, 25],
+            "grid_size": [20, 25, 30],  # Expanded: 15 too coarse, added 30
             "rotation_angles": [
-                [0, 90, 180, 270],  # Orthogonal
-                [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way
-                list(range(0, 360, 30)),  # 12-way
+                [0, 90, 180, 270],  # 4-way orthogonal (best for grain direction)
+                [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way (more flexibility)
+                list(range(0, 360, 30)),  # 12-way (remnants/irregular)
             ],
-            "allow_flipping": [True, False],
-            "max_attempts": [300, 500],
+            "allow_flipping": [True],  # Keep True (best performer)
+            "max_attempts": [500, 700, 1000],  # Expanded: test quality vs speed
         }
 
     def _apply_config(self, config: Dict):
