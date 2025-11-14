@@ -22,6 +22,15 @@ REFERENCES:
 [5] Wong, W.K., et al. (2003). "Optimization of single-package-size allocation and
     cutting operation in garment industry"
     Journal of Manufacturing Science and Engineering, 125(1), 146-153.
+
+[6] Hopper, E., Turton, B.C.H. (2001). "A review of the application of meta-heuristic
+    algorithms to 2D strip packing problems"
+    Artificial Intelligence Review, 16(4), 257-300.
+
+[7] Maxwell, D., Azzopardi, L., Järvelin, K., Keskustalo, H. (2015). "Searching and
+    stopping: An analysis of stopping rules and strategies"
+    Proceedings of the 24th ACM International Conference on Information and Knowledge
+    Management (CIKM '15), 313-322.
 """
 
 import os
@@ -210,6 +219,24 @@ FITTING = {
         "origin_bonus": 3,  # Bonus for bottom-left placement [1]
         "grain_alignment_bonus": 8,  # Bonus for following fabric grain [5]
     },
+    # Early stopping criterion for placement search
+    # Based on quality threshold approaches in heuristic search optimization
+    # References:
+    # - Gomes & Oliveira (2006): Simulated annealing uses acceptance criteria based on solution quality
+    # - Hopper & Turton (2001): Meta-heuristics for 2D packing often employ quality-based termination
+    # - Maxwell et al. (2015): "Stopping rules" in search strategies use satisfaction thresholds
+    #
+    # Rationale for threshold value of 15.0:
+    # Given our reward structure:
+    #   - edge_bonus (12) + utilization_bonus (15) ≈ 27 maximum theoretical
+    #   - compactness_bonus (5) + grain_alignment (8) = 13 additional
+    # A score of 15.0 represents ~35-40% of maximum possible score, indicating:
+    #   - Good edge placement OR
+    #   - Excellent utilization OR
+    #   - Strong combination of multiple favorable factors
+    # This threshold balances thoroughness (explores reasonable number of options)
+    # with efficiency (stops when "good enough" solution found)
+    "EXCELLENT_SCORE_THRESHOLD": 15.0,  # Early stopping threshold for placement quality
     # Optimization algorithms to use
     "USE_NEURAL_OPTIMIZER": False,  # Start with heuristics, neural requires training
     "USE_NFP": True,  # Use No-Fit Polygons [4]

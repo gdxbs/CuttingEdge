@@ -155,7 +155,7 @@ class HeuristicOptimizer:
                 [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way (more flexibility)
                 list(range(0, 360, 30)),  # 12-way (remnants/irregular)
             ],
-            "allow_flipping": [True],  # Keep True (best performer)
+            "allow_flipping": [True, False],  # Keep True (best performer)
             "max_attempts": [500, 700, 1000],  # Expanded: test quality vs speed
         }
 

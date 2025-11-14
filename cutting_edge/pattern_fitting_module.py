@@ -483,11 +483,13 @@ class PatternFittingModule:
         self, pattern: Pattern, rotation: float
     ) -> Tuple[float, float]:
         """Get pattern dimensions after rotation."""
+        # Normalize rotation to [0, 360)
+        norm_rotation = rotation % 360
         # For 0/180 degrees, dimensions stay the same
-        if rotation % 180 == 0:
+        if norm_rotation == 0 or norm_rotation == 180:
             return pattern.width, pattern.height
         # For 90/270 degrees, dimensions swap
-        elif rotation % 180 == 90:
+        elif norm_rotation == 90 or norm_rotation == 270:
             return pattern.height, pattern.width
         else:
             # For other angles, calculate bounding box
@@ -558,8 +560,12 @@ class PatternFittingModule:
         best_placement = None
         best_score = float("-inf")
 
-        # Issue F: Early stopping threshold
-        EXCELLENT_SCORE_THRESHOLD = 15.0  # Stop early if we find a great placement
+        # Issue F: Early stopping threshold from config
+        # See config.py FITTING["EXCELLENT_SCORE_THRESHOLD"] for detailed rationale
+        # Based on quality threshold stopping criteria from:
+        # [6] Hopper & Turton (2001) - meta-heuristics with quality-based termination
+        # [7] Maxwell et al. (2015) - stopping rules in search strategies
+        excellent_threshold = FITTING.get("EXCELLENT_SCORE_THRESHOLD", 15.0)
 
         # Create cloth polygons
         cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
@@ -668,9 +674,15 @@ class PatternFittingModule:
             positions_to_try = neural_suggestions + sampled
 
         # Try each position
+        # Note: This is a single-level loop iterating through pre-generated positions
+        # The break statement for early stopping will correctly exit this loop
         attempts = 0
+        early_stop_triggered = False
+
         for x, y, rotation, flipped in positions_to_try:
+            # Check max attempts limit
             if attempts >= self.max_attempts:
+                logger.debug(f"Reached max_attempts limit ({self.max_attempts})")
                 break
 
             # Create pattern polygon with transformation
@@ -702,12 +714,16 @@ class PatternFittingModule:
                     )
 
                     # Issue F: Early stopping if excellent placement found
-                    if best_score > EXCELLENT_SCORE_THRESHOLD:
+                    # Quality threshold stopping criterion from [6] Hopper & Turton (2001)
+                    # and [7] Maxwell et al. (2015) - stop when "good enough" solution reached
+                    if best_score > excellent_threshold:
+                        early_stop_triggered = True
                         logger.debug(
-                            f"Found excellent placement (score={best_score:.2f}), "
-                            f"stopping early after {attempts} attempts"
+                            f"Found excellent placement (score={best_score:.2f} > "
+                            f"threshold={excellent_threshold:.2f}), stopping early "
+                            f"after {attempts + 1} attempts"
                         )
-                        break
+                        break  # Exit the positions_to_try loop
 
                     # If neural optimization is enabled, train the optimizer
                     if self.use_neural:
@@ -729,16 +745,22 @@ class PatternFittingModule:
 
             attempts += 1
 
-        # Log result
+        # Log result with early stopping info
         if best_placement:
-            logger.info(
+            log_msg = (
                 f"Best placement for {pattern.name}: "
                 f"position=({best_placement.position[0]:.1f}, {best_placement.position[1]:.1f}), "
                 f"rotation={best_placement.rotation}°, "
                 f"flipped={best_placement.flipped}, score={best_placement.score:.2f}"
             )
+            if early_stop_triggered:
+                log_msg += f" (early stop after {attempts} attempts)"
+            logger.info(log_msg)
         else:
-            logger.warning(f"Failed to find valid placement for {pattern.name}")
+            logger.warning(
+                f"Failed to find valid placement for {pattern.name} "
+                f"after {attempts} attempts"
+            )
 
         return best_placement
 
