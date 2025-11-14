@@ -306,8 +306,11 @@ class PatternFittingModule:
             avg_distance = total_distance / len(existing_placements)
 
             # Closer patterns = higher bonus
-            if avg_distance < 10:  # Within 10cm on average
-                compact_factor = 1 - avg_distance / 10
+            # Distance threshold from config (default 10 cm)
+            # Represents "close proximity" - patterns within this distance likely related
+            compactness_threshold = FITTING.get("COMPACTNESS_DISTANCE_CM", 10.0)
+            if avg_distance < compactness_threshold:
+                compact_factor = 1 - avg_distance / compactness_threshold
                 score += rewards["compactness_bonus"] * compact_factor
 
         # 3. Wasted space penalty
@@ -997,9 +1000,10 @@ class PatternFittingModule:
             )
 
         # Set axis properties to focus on cloth area
-        margin = 20
-        ax.set_xlim(-margin, cloth.width + margin)
-        ax.set_ylim(-margin, cloth.height + margin)
+        # Margin from config (in cm) - prevents edge clipping in plots
+        margin_cm = VISUALIZATION.get("PLOT_MARGIN_CM", 2.0)
+        ax.set_xlim(-margin_cm, cloth.width + margin_cm)
+        ax.set_ylim(-margin_cm, cloth.height + margin_cm)
         ax.set_aspect("equal")
         ax.invert_yaxis()  # To match image coordinates
 

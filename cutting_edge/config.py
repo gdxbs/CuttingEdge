@@ -150,6 +150,10 @@ CLOTH = {
     "MIN_DEFECT_AREA": 100,  # 100 pixels minimum defect size (approx 1 cm²) to filter noise
     # Defect safety margin - patterns must stay this far from defects (in pixels before scaling)
     "DEFECT_SAFETY_MARGIN": 5,  # 5 pixels safety margin around defects
+    # Edge defect detection threshold for Sobel gradient magnitude
+    # Empirical: 80 threshold on 0-255 gradient catches significant edges without noise
+    # Based on analysis of fabric edge characteristics
+    "EDGE_DEFECT_GRADIENT_THRESHOLD": 80,  # Gradient threshold for edge defect detection
     # Material types from textile classification
     "TYPES": [
         "cotton",
@@ -219,6 +223,11 @@ FITTING = {
         "origin_bonus": 3,  # Bonus for bottom-left placement [1]
         "grain_alignment_bonus": 8,  # Bonus for following fabric grain [5]
     },
+    # Compactness calculation threshold
+    # Distance (in cm) below which patterns are considered "close" for compactness bonus
+    # Justification: 10 cm represents ~20% of median pattern size (50 cm)
+    # Patterns within this distance likely part of same garment piece
+    "COMPACTNESS_DISTANCE_CM": 10.0,  # "Close proximity" threshold for compactness
     # Early stopping criterion for placement search
     # Based on quality threshold approaches in heuristic search optimization
     # References:
@@ -257,6 +266,9 @@ VISUALIZATION = {
     "LINE_WIDTH": 2,
     "FONT_SIZE": 10,
     "ALPHA": 0.7,
+    # Margin around cloth in plots (in cm) - prevents edge patterns from being cut off
+    # Standard: 2 cm (~20 pixels at 10 px/cm) is standard matplotlib margin practice
+    "PLOT_MARGIN_CM": 2.0,  # Visualization margin for clarity
 }
 
 # Training settings
