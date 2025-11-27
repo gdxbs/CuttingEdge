@@ -384,11 +384,13 @@ class ClothRecognitionModule:
             gradient_magnitude = (
                 gradient_magnitude / gradient_magnitude.max() * 255
             ).astype(np.uint8)
-        else:
-            gradient_magnitude = gradient_magnitude.astype(np.uint8)
 
-        # Detect strong edges (potential tears or holes)
-        _, edge_defects = cv2.threshold(gradient_magnitude, 80, 255, cv2.THRESH_BINARY)
+        # Threshold to find strong edges (potential tears/cuts)
+        # Threshold value from config - empirically determined for fabric edges
+        edge_threshold = CLOTH.get("EDGE_DEFECT_GRADIENT_THRESHOLD", 80)
+        _, edge_defects = cv2.threshold(
+            gradient_magnitude, edge_threshold, 255, cv2.THRESH_BINARY
+        )
 
         # 5. TEXTURE ANOMALIES - Using local variance
         #    Areas with very different texture from surrounding cloth

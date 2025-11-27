@@ -306,8 +306,11 @@ class PatternFittingModule:
             avg_distance = total_distance / len(existing_placements)
 
             # Closer patterns = higher bonus
-            if avg_distance < 10:  # Within 10cm on average
-                compact_factor = 1 - avg_distance / 10
+            # Distance threshold from config (default 10 cm)
+            # Represents "close proximity" - patterns within this distance likely related
+            compactness_threshold = FITTING.get("COMPACTNESS_DISTANCE_CM", 10.0)
+            if avg_distance < compactness_threshold:
+                compact_factor = 1 - avg_distance / compactness_threshold
                 score += rewards["compactness_bonus"] * compact_factor
 
         # 3. Wasted space penalty
@@ -479,6 +482,68 @@ class PatternFittingModule:
             "area": area,
         }
 
+    def _get_rotated_dimensions(
+        self, pattern: Pattern, rotation: float
+    ) -> Tuple[float, float]:
+        """Get pattern dimensions after rotation."""
+        # Normalize rotation to [0, 360)
+        norm_rotation = rotation % 360
+        # For 0/180 degrees, dimensions stay the same
+        if norm_rotation == 0 or norm_rotation == 180:
+            return pattern.width, pattern.height
+        # For 90/270 degrees, dimensions swap
+        elif norm_rotation == 90 or norm_rotation == 270:
+            return pattern.height, pattern.width
+        else:
+            # For other angles, calculate bounding box
+            rad = np.radians(rotation)
+            cos_r = abs(np.cos(rad))
+            sin_r = abs(np.sin(rad))
+            new_width = pattern.width * cos_r + pattern.height * sin_r
+            new_height = pattern.width * sin_r + pattern.height * cos_r
+            return new_width, new_height
+
+    def _prefilter_patterns(
+        self, patterns: List[Pattern], cloth: ClothMaterial
+    ) -> Tuple[List[Pattern], List[Pattern]]:
+        """
+        Filter out patterns that cannot possibly fit on cloth.
+
+        Issue A fix: Prevents wasted processing time on impossible placements.
+
+        Returns:
+            (valid_patterns, invalid_patterns)
+        """
+        cloth_width, cloth_height = cloth.width, cloth.height
+
+        valid_patterns = []
+        invalid_patterns = []
+
+        for pattern in patterns:
+            # Check all possible rotations
+            can_fit = False
+            for angle in self.rotation_angles:
+                p_width, p_height = self._get_rotated_dimensions(pattern, angle)
+                if p_width <= cloth_width and p_height <= cloth_height:
+                    can_fit = True
+                    break
+
+            if can_fit:
+                valid_patterns.append(pattern)
+            else:
+                invalid_patterns.append(pattern)
+                logger.warning(
+                    f"Pattern {pattern.name} ({pattern.width:.1f}×{pattern.height:.1f} cm) "
+                    f"cannot fit on cloth ({cloth_width:.1f}×{cloth_height:.1f} cm) - FILTERED OUT"
+                )
+
+        if invalid_patterns:
+            logger.info(
+                f"Pre-filtered {len(invalid_patterns)} patterns that cannot fit on cloth"
+            )
+
+        return valid_patterns, invalid_patterns
+
     def find_best_placement(
         self,
         pattern: Pattern,
@@ -491,9 +556,19 @@ class PatternFittingModule:
         Implements algorithms from:
         [1] Jakobs (1996) - Bottom-Left-Fill
         [4] Burke et al. (2007) - No-Fit Polygon
+
+        Enhanced with:
+        - Issue F: Early stopping when excellent placement found
         """
         best_placement = None
         best_score = float("-inf")
+
+        # Issue F: Early stopping threshold from config
+        # See config.py FITTING["EXCELLENT_SCORE_THRESHOLD"] for detailed rationale
+        # Based on quality threshold stopping criteria from:
+        # [6] Hopper & Turton (2001) - meta-heuristics with quality-based termination
+        # [7] Maxwell et al. (2015) - stopping rules in search strategies
+        excellent_threshold = FITTING.get("EXCELLENT_SCORE_THRESHOLD", 15.0)
 
         # Create cloth polygons
         cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
@@ -602,9 +677,15 @@ class PatternFittingModule:
             positions_to_try = neural_suggestions + sampled
 
         # Try each position
+        # Note: This is a single-level loop iterating through pre-generated positions
+        # The break statement for early stopping will correctly exit this loop
         attempts = 0
+        early_stop_triggered = False
+
         for x, y, rotation, flipped in positions_to_try:
-            if attempts >= FITTING["MAX_ATTEMPTS"]:
+            # Check max attempts limit
+            if attempts >= self.max_attempts:
+                logger.debug(f"Reached max_attempts limit ({self.max_attempts})")
                 break
 
             # Create pattern polygon with transformation
@@ -635,6 +716,18 @@ class PatternFittingModule:
                         placement_polygon=pattern_poly,
                     )
 
+                    # Issue F: Early stopping if excellent placement found
+                    # Quality threshold stopping criterion from [6] Hopper & Turton (2001)
+                    # and [7] Maxwell et al. (2015) - stop when "good enough" solution reached
+                    if best_score > excellent_threshold:
+                        early_stop_triggered = True
+                        logger.debug(
+                            f"Found excellent placement (score={best_score:.2f} > "
+                            f"threshold={excellent_threshold:.2f}), stopping early "
+                            f"after {attempts + 1} attempts"
+                        )
+                        break  # Exit the positions_to_try loop
+
                     # If neural optimization is enabled, train the optimizer
                     if self.use_neural:
                         # Only train if state was created
@@ -655,16 +748,22 @@ class PatternFittingModule:
 
             attempts += 1
 
-        # Log result
+        # Log result with early stopping info
         if best_placement:
-            logger.info(
+            log_msg = (
                 f"Best placement for {pattern.name}: "
                 f"position=({best_placement.position[0]:.1f}, {best_placement.position[1]:.1f}), "
                 f"rotation={best_placement.rotation}°, "
                 f"flipped={best_placement.flipped}, score={best_placement.score:.2f}"
             )
+            if early_stop_triggered:
+                log_msg += f" (early stop after {attempts} attempts)"
+            logger.info(log_msg)
         else:
-            logger.warning(f"Failed to find valid placement for {pattern.name}")
+            logger.warning(
+                f"Failed to find valid placement for {pattern.name} "
+                f"after {attempts} attempts"
+            )
 
         return best_placement
 
@@ -702,18 +801,29 @@ class PatternFittingModule:
         """
         Main method to fit multiple patterns onto a cloth.
         Returns fitting results and metrics.
+
+        Enhanced with Issue A: Pre-filtering of patterns that cannot fit.
         """
         logger.info(
             f"Fitting {len(patterns)} patterns onto {cloth.cloth_type} material "
             f"({cloth.width}x{cloth.height} cm)"
         )
 
-        # Sort patterns by area (larger patterns first)
-        sorted_patterns = sorted(patterns, key=lambda p: p.area, reverse=True)
+        # Issue A: Pre-filter patterns that cannot possibly fit
+        valid_patterns, invalid_patterns = self._prefilter_patterns(patterns, cloth)
+
+        if invalid_patterns:
+            logger.warning(
+                f"Filtered out {len(invalid_patterns)}/{len(patterns)} patterns "
+                f"that are too large for the cloth"
+            )
+
+        # Sort valid patterns by area (larger patterns first)
+        sorted_patterns = sorted(valid_patterns, key=lambda p: p.area, reverse=True)
 
         # Try to place each pattern
         placed_patterns = []
-        failed_patterns = []
+        failed_patterns = list(invalid_patterns)  # Start with pre-filtered patterns
 
         for i, pattern in enumerate(sorted_patterns):
             logger.info(
@@ -776,9 +886,17 @@ class PatternFittingModule:
         patterns: List[Pattern],
         cloth: ClothMaterial,
         output_path: str,
+        cloth_image_name: Optional[str] = None,
     ):
         """
         Create a visualization of the fitting result.
+
+        Args:
+            result: Fitting result dictionary
+            patterns: List of patterns
+            cloth: Cloth material
+            output_path: Where to save visualization
+            cloth_image_name: Name of the cloth image file (for display)
         """
         # Setup figure
         fig, ax = plt.subplots(1, 1, figsize=VISUALIZATION["FIGURE_SIZE"])
@@ -882,19 +1000,22 @@ class PatternFittingModule:
             )
 
         # Set axis properties to focus on cloth area
-        margin = 20
-        ax.set_xlim(-margin, cloth.width + margin)
-        ax.set_ylim(-margin, cloth.height + margin)
+        # Margin from config (in cm) - prevents edge clipping in plots
+        margin_cm = VISUALIZATION.get("PLOT_MARGIN_CM", 2.0)
+        ax.set_xlim(-margin_cm, cloth.width + margin_cm)
+        ax.set_ylim(-margin_cm, cloth.height + margin_cm)
         ax.set_aspect("equal")
         ax.invert_yaxis()  # To match image coordinates
 
-        # Add title with metrics
+        # Add title with metrics and cloth name
         title = "Pattern Fitting Result\n"
+        if cloth_image_name:
+            title += f"Cloth: {cloth_image_name}\n"
         title += f"Utilization: {result['utilization_percentage']:.1f}% | "
         title += f"Patterns: {result['patterns_placed']}/{result['patterns_total']} | "
-        title += f"Cloth: {cloth.cloth_type}"
+        title += f"Type: {cloth.cloth_type}"
 
-        ax.set_title(title, fontsize=14)
+        ax.set_title(title, fontsize=13, fontweight="bold")
         ax.set_xlabel("Width (cm)")
         ax.set_ylabel("Height (cm)")
 
