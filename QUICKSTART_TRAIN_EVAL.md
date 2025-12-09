@@ -19,7 +19,7 @@ source .venv/bin/activate  # Unix/Mac
 # Run hyperparameter optimization (5-10 minutes)
 python -m cutting_edge.main --mode train
 
-# Run Bayesian Optimization (5-10 minutes)
+# Run Bayesian Optimization (recommended for best results)(2+ hours)
 python -m cutting_edge.main --mode train --optimizer bayesian
 
 # This will:
@@ -114,7 +114,7 @@ python -m cutting_edge.main --mode demo --num_patterns 5
 # Fit mode with optimized params
 python -m cutting_edge.main --mode fit --patterns pattern1.png pattern2.png --cloth cloth1.jpg
 
-# All cloths mode with optimized params
+# All cloths mode with optimized params (2+ hours)
 python -m cutting_edge.main --mode all_cloths --max_patterns_per_cloth 10
 ```
 
@@ -142,6 +142,15 @@ python -m cutting_edge.main --mode all_cloths --max_patterns_per_cloth 10
 - **Goal**: Minimize while maintaining quality
 - **Typical**: 1-3 seconds
 - **Fast**: <2 seconds
+
+### Defect Detection (F1 Score)
+- **What**: Geometric mean of precision and recall for defects
+- **Types**: Hole, Stain, Line, Freeform
+- **Goal**: Maximize (1.0 is perfect)
+
+### Auto-Scaling
+- **Note**: The system now attempts to scale patterns up if space permits.
+- **Impact**: May increase Utilization but slightly increase Processing Time.
 
 ## Tips for Best Results
 

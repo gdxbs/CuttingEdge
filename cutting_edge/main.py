@@ -1288,9 +1288,7 @@ class CuttingEdgeSystem:
         logger.info(f"Total available patterns: {len(pattern_files)}")
 
         # Limit total patterns to process to avoid excessive runtime
-        max_total_patterns = min(
-            len(pattern_files), 800
-        )  # Process max 800 unique patterns to cover more cloths
+        max_total_patterns = len(pattern_files)  # Process all available patterns
         logger.info(
             f"Will process maximum {max_total_patterns} unique patterns across all cloths"
         )

@@ -15,8 +15,8 @@ The cutting-edge system now features a modern, high-performance training and eva
 - Saves the optimal configuration for future use
 
 **Parameters Optimized:**
-- `grid_size`: Resolution of placement grid (15, 20, 25)
-- `rotation_angles`: Which rotations to try (orthogonal, 8-way, fine-grained)
+- `grid_size`: Resolution of placement grid (15, 20, 25, 30)
+- `rotation_angles`: Which rotations to try (orthogonal 4, 8-way, 12-way)
 - `allow_flipping`: Whether to flip patterns
 - `max_attempts`: Maximum placement attempts per pattern
 
@@ -32,8 +32,10 @@ The cutting-edge system now features a modern, high-performance training and eva
 - Pattern placement success rate
 - Waste area (cm²)
 - Processing time per sample
-- Patterns placed vs. attempted
-- Performance breakdown by cloth type
+- Defect Detection F1 Scores (Hole, Stain, Line, Freeform)
+- Grain Direction Error
+- Pattern Classification Accuracy
+- Dimension Prediction Error (MAE)
 
 **Benefits:**
 - Understand system performance deeply

@@ -21,7 +21,8 @@ cutting_edge/
 ├── config.py                 # Centralized configuration
 ├── pattern_recognition_module.py   # Pattern analysis
 ├── cloth_recognition_module.py     # Cloth material analysis
-└── pattern_fitting_module.py       # Pattern placement optimization
+├── pattern_fitting_module.py       # Pattern placement optimization
+└── training_optimizer.py           # Hyperparameter optimization (Grid Search/Bayesian)
 ```
 
 ## Workflow
@@ -64,8 +65,9 @@ The Cloth Recognition Module (`cloth_recognition_module.py`) analyzes cloth mate
 #### Functionality:
 
 1. **Cloth Segmentation**: Identifies cloth boundaries using color thresholding or U-Net
-2. **Defect Detection**: Identifies holes, stains, or other defects within the cloth
-3. **Material Analysis**: Extracts properties like grain direction using Gabor filters
+2. **Defect Detection**: Identifies and classifies defects (holes, stains, lines, freeform)
+3. **Cloth Type Classification**: Heuristically determines material type (leather, denim, cotton) based on shape and color measurements
+4. **Material Analysis**: Extracts properties like grain direction using Gabor filters
 4. **Area Calculation**: Computes total and usable area accounting for defects and margins
 
 ### Pattern Fitting Module
@@ -83,9 +85,11 @@ The Pattern Fitting Module (`pattern_fitting_module.py`) handles the core optimi
 1. **Polygon Conversion**: Converts pattern and cloth contours to Shapely polygons
 2. **Placement Search**: Tests various positions, rotations, and orientations 
 3. **Validity Checking**: Ensures patterns don't overlap, are within boundaries, and avoid defects
-4. **Scoring System**: Evaluates placement quality based on edge utilization, compactness, etc.
-5. **Neural Optimization**: Can use a trained network to guide placement search (optional)
-6. **Visualization**: Generates detailed visualizations and reports
+5. **Auto-Scaling**: Dynamically adjusts pattern scale to maximize material utilization
+6. **Dense Fallback**: Triggers a high-resolution search if standard heuristic placement fails
+7. **Scoring System**: Evaluates placement quality based on edge utilization, compactness, etc.
+8. **Neural Optimization**: Can use a trained network to guide placement search (optional)
+9. **Visualization**: Generates detailed visualizations and reports
 
 ## Main Orchestration
 

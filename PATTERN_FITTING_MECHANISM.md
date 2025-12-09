@@ -20,8 +20,9 @@ The module is built around one main class, **`PatternFittingModule`**, which han
 The main entry point is the `fit_patterns` method. It follows this sequence:
 
 1.  **Auto-Scaling (Optional)**:
-    *   If enabled, it calls `find_optimal_scale` to run a binary search simulation.
-    *   It determines if patterns can be scaled up (e.g., 20% larger) while still fitting on the cloth, maximizing usage.
+    *   If enabled (via `AUTO_SCALE` in config), it calls `find_optimal_scale`.
+    *   Runs a binary search simulation to find the largest scale factor (up to `MAX_SCALE`) that allows a minimum percentage of patterns (`MIN_PATTERNS_PERCENT`) to fit.
+    *   This maximizes material utilization by enlarging patterns to fill available space.
 
 2.  **Pre-Filtering**:
     *   Checks every pattern against the cloth dimensions.
@@ -58,8 +59,9 @@ This function determines exactly where a single pattern goes. It employs a **hyb
 *   **Optimization (Early Stopping)**: If it finds a placement with a "Score" strictly higher than `EXCELLENT_SCORE_THRESHOLD` (e.g., >15.0), it stops searching immediately and takes that spot.
 
 ### D. Dense Fallback (The "Safety Net")
-*   If the heuristic/grid search fails efficiently (due to sparse checking), it enters a `_find_baseline_placement` mode.
-*   This performs a **dense search** (e.g., every 5.0cm) with strict rotations (0, 90, 180, 270) to ensure that if a spot exists, it will be found.
+*   If the heuristic/grid search fails to find a valid placement for a pattern, `_find_baseline_placement` is triggered.
+*   This specific fallback uses a **dense search resolution** (e.g., 5.0cm step) and strict orthogonal rotations (0, 90, 180, 270) to ensure no valid placement is missed due to coarse sampling.
+*   It serves as a critical reliability check, especially when auto-scaling suggests a fit is possible.
 
 ---
 
@@ -73,10 +75,12 @@ For every potential position, the module runs two critical checks:
 *   **Defects**: Does it touch any holes, stains, or tears defined in the cloth?
 
 ### 2. Scoring (`calculate_placement_score`)
-If placement is valid, it gets a score based on:
+76: If placement is valid, it gets a score based on refined heuristics (defined in `FITTING["REWARDS"]`):
 *   **Utilization**: Bonus for using more area.
-*   **Compactness**: Bonus for being close to other pieces (clustering).
-*   **Gap Penalty**: Penalty for creating unusable void spaces (holes in the layout).
+*   **Compactness**: Bonus for being close to other pieces (within `COMPACTNESS_DISTANCE_CM`).
+*   **Edge/Origin Bonus**: Preference for placements near edges or the origin (0,0) to keep the center open.
+*   **Grain Alignment**: Bonus for aligning with the cloth's grain (if detected).
+*   **Gap Penalty**: Significant penalty for creating unusable void spaces.
 
 ---
 

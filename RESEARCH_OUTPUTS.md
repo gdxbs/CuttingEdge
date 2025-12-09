@@ -157,6 +157,10 @@ cutting-edge/
 - `Waste_Area_cm2`: Wasted fabric area (cm²)
 - `Processing_Time_sec`: Processing time (seconds)
 - `Visualization_File`: Corresponding visualization image
+- `Hole_F1`, `Stain_F1`, `Line_F1`, `Freeform_F1`: Defect detection scores
+- `Grain_Error_Mean`: Average deviation from true grain direction
+- `Class_Accuracy`: Pattern classification accuracy
+- `Dim_MAE`: Dimension prediction Mean Absolute Error (cm)
 
 **Use in Paper**:
 - Calculate mean ± std for all metrics
@@ -195,13 +199,16 @@ cutting-edge/
 #### A. Comprehensive Performance Analysis
 **File**: `output/evaluation_charts/evaluation_comprehensive.png`
 
-**Content**: 6-panel figure with:
+**Content**: 3x3 grid (9-panel) figure with:
 1. Utilization distribution histogram
 2. Success rate distribution histogram
 3. Processing time distribution histogram
-4. Utilization vs. number of patterns scatter plot
-5. Waste area by cloth type bar chart
-6. Per-sample performance line plot
+4. Train vs. Test Utilization trend
+5. Train vs. Test Success Rate trend
+6. Defect Detection F1 Scores (Hole, Stain, Line, Freeform)
+7. Utilization vs. Pattern Count scatter
+8. Per-sample Utilization bar chart
+9. Per-sample Success Rate by chart
 
 **Use in Paper**: Main results figure (Figure 3 or 4).
 

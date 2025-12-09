@@ -15,8 +15,10 @@ The core of the system uses a combination of modern computer vision techniques a
 - **Geometric Pattern Fitting**: Optimizes pattern placement using the `shapely` library for precise geometric calculations. It tests multiple rotations and flips to find the best fit.
 - **Heuristic-Based Scoring**: The placement quality is determined by a clear scoring system that rewards material utilization, compactness, and edge placement.
 - **Neural-Assisted Optimization**: An optional, simple neural network can be used to suggest promising placements, speeding up the search process.
+- **Auto-Scaling**: Dynamically adjusts pattern sizes to maximize cloth utilization while ensuring fit.
+- **Enhanced Defect Detection**: Classifies defects into specific types (Hole, Stain, Line, Freeform) and handles irregular "remnant" cloth shapes.
 - **Comprehensive Visualization & Reporting**: Generates detailed visual plots of the final layout and text-based reports with key metrics.
-- **Fully Configurable**: All important parameters and magic numbers are centralized in `src/cutting_edge/config.py` for easy tuning.
+- **Fully Configurable**: All important parameters and magic numbers are centralized in `cutting_edge/config.py` for easy tuning.
 
 ## How It Works
 
