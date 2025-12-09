@@ -41,7 +41,7 @@ class CuttingEdgeSystem:
     Main system that orchestrates the entire pattern fitting workflow.
     """
 
-    def __init__(self, base_dir: Optional[str] = None):
+    def __init__(self, base_dir: Optional[str] = None, auto_scale: Optional[bool] = None):
         """Initialize the cutting edge system."""
         # Set base directory
         if base_dir is None:
@@ -68,7 +68,7 @@ class CuttingEdgeSystem:
         # Initialize modules
         self.pattern_module = PatternRecognitionModule()
         self.cloth_module = ClothRecognitionModule()
-        self.fitting_module = PatternFittingModule()
+        self.fitting_module = PatternFittingModule(auto_scale=auto_scale)
 
         logger.info("Cutting Edge System initialized")
         logger.info(f"Base directory: {self.base_dir}")
@@ -89,10 +89,15 @@ class CuttingEdgeSystem:
         )
         file_handler.setFormatter(formatter)
 
-        # Add handler to root logger
-        logging.getLogger().addHandler(file_handler)
-
-        logger.info(f"Log file created: {log_file}")
+        # Add handler to root logger only if not already present
+        root_logger = logging.getLogger()
+        has_file_handler = any(isinstance(h, logging.FileHandler) for h in root_logger.handlers)
+        
+        if not has_file_handler:
+            root_logger.addHandler(file_handler)
+            logger.info(f"Log file created: {log_file}")
+        else:
+            logger.info(f"Logging to existing handlers: {[type(h).__name__ for h in root_logger.handlers]}")
 
     def select_suitable_cloth(
         self, pattern_files: List[str], cloth_files: List[str]
@@ -360,13 +365,18 @@ class CuttingEdgeSystem:
             logger.error(f"Failed to process cloth {cloth_path}: {e}")
             raise
 
-    def process_fitting(self, patterns: List[Pattern], cloth: ClothMaterial) -> Dict:
+    def process_fitting(
+        self, patterns: List[Pattern], cloth: ClothMaterial, baseline_mode: bool = False
+    ) -> Dict:
         """
         Perform pattern fitting and generate visualization.
         """
         # Fit patterns on cloth
         logger.info(f"Fitting {len(patterns)} patterns onto cloth...")
-        result = self.fitting_module.fit_patterns(patterns, cloth)
+        if baseline_mode:
+            logger.info("Using BLF Baseline mode (Simple Greedy, Bottom-Left, 90° rotations)")
+            
+        result = self.fitting_module.fit_patterns(patterns, cloth, baseline_mode=baseline_mode)
 
         # Generate visualization
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -390,8 +400,9 @@ class CuttingEdgeSystem:
         return result
 
     def run_fitting_task(
-        self, pattern_paths: List[str], cloth_path: str
+        self, pattern_paths: List[str], cloth_path: str, baseline_mode: bool = False
     ) -> Optional[Dict]:
+
         """
         Run a complete fitting task with specified patterns and cloth.
         """
@@ -413,7 +424,7 @@ class CuttingEdgeSystem:
         cloth = self.process_cloth(cloth_path)
 
         # Perform fitting
-        result = self.process_fitting(patterns, cloth)
+        result = self.process_fitting(patterns, cloth, baseline_mode=baseline_mode)
 
         # Add file paths to result
         result["pattern_paths"] = pattern_paths
@@ -437,7 +448,7 @@ class CuttingEdgeSystem:
         logger.info(f"Applied configuration: {config}")
 
     def _save_evaluation_outputs(
-        self, test_results: List[Dict], test_samples: List[Dict]
+        self, test_results: List[Dict], test_samples: List[Dict], extra_metrics: Dict = None
     ):
         """Save comprehensive evaluation outputs for research paper."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -554,21 +565,62 @@ class CuttingEdgeSystem:
                 f.write(f"  Utilization: {result['utilization']:.2f}%\n")
                 f.write(f"  Waste: {result['waste_area']:.2f} cm²\n")
                 f.write(f"  Time: {result['processing_time']:.3f}s\n")
+        
+            # Advanced Metrics Section (Moved from Charts)
+            if extra_metrics:
+                f.write("\n" + "=" * 70 + "\n")
+                f.write("ADVANCED METRICS:\n")
+                f.write("-" * 70 + "\n")
+                
+                # Grain Direction
+                grain_errs = extra_metrics.get("grain_errors", [])
+                if grain_errs:
+                    f.write(f"GRAIN DIRECTION ERROR:\n")
+                    f.write(f"  Mean: {np.mean(grain_errs):.1f}°\n")
+                    f.write(f"  Median: {np.median(grain_errs):.1f}°\n")
+                    f.write(f"  Max: {np.max(grain_errs):.1f}°\n")
+                    f.write(f"  Samples: {len(grain_errs)}\n\n")
+                
+                # Classification Accuracy
+                cls_stats = extra_metrics.get("class_acc_stats", {})
+                if cls_stats:
+                    total_correct = sum(s["correct"] for s in cls_stats.values())
+                    total_patterns = sum(s["total"] for s in cls_stats.values())
+                    acc = total_correct / total_patterns if total_patterns > 0 else 0
+                    f.write(f"PATTERN CLASSIFICATION:\n")
+                    f.write(f"  Overall Accuracy: {acc*100:.1f}% ({total_correct}/{total_patterns})\n")
+                    sorted_cats = sorted(cls_stats.items(), key=lambda x: x[1]['total'], reverse=True)
+                    for cat, stat in sorted_cats:
+                        if stat['total'] > 0:
+                            cat_acc = stat['correct'] / stat['total']
+                            f.write(f"    - {cat}: {cat_acc*100:.1f}% ({stat['correct']}/{stat['total']})\n")
+                    f.write("\n")
+
+                # Dimension Prediction
+                dim_errs = extra_metrics.get("dim_errors", [])
+                if dim_errs:
+                    f.write(f"DIMENSION PREDICTION ERROR (MAE):\n")
+                    f.write(f"  Mean: {np.mean(dim_errs):.2f} cm\n")
+                    f.write(f"  Median: {np.median(dim_errs):.2f} cm\n")
+                    f.write(f"  Max: {np.max(dim_errs):.2f} cm\n")
+                    f.write(f"  Samples: {len(dim_errs)}\n")
         logger.info(f"Evaluation summary saved to {summary_path}")
 
         # Generate visualization charts
-        self._generate_evaluation_charts(test_results, eval_charts_dir)
+        self._generate_evaluation_charts(test_results, eval_charts_dir, extra_metrics)
         logger.info(f"Evaluation charts saved to {eval_charts_dir}/")
 
-    def _generate_evaluation_charts(self, test_results: List[Dict], charts_dir: str):
-        """Generate comprehensive visualization charts for evaluation results."""
+    def _generate_evaluation_charts(self, test_results: List[Dict], charts_dir: str, extra_metrics: Dict = None):
+        """Generate comprehensive 3x3 visualization charts for evaluation results."""
         if not test_results:
             return
 
-        # Chart 1: Utilization distribution
-        plt.figure(figsize=(14, 10))
+        plt.figure(figsize=(18, 15))
+        
+        # --- Row 1: Distributions ---
 
-        plt.subplot(2, 3, 1)
+        # Chart 1: Utilization distribution
+        plt.subplot(3, 3, 1)
         utilizations = [r["utilization"] for r in test_results]
         plt.hist(utilizations, bins=15, alpha=0.7, color="steelblue", edgecolor="black")
         mean_util = float(np.mean(utilizations))
@@ -579,14 +631,14 @@ class CuttingEdgeSystem:
             linewidth=2,
             label=f"Mean: {mean_util:.1f}%",
         )
-        plt.xlabel("Utilization (%)", fontsize=11)
-        plt.ylabel("Frequency", fontsize=11)
-        plt.title("Fabric Utilization Distribution", fontsize=12, fontweight="bold")
+        plt.xlabel("Utilization (%)", fontsize=10)
+        plt.ylabel("Frequency", fontsize=10)
+        plt.title("Fabric Utilization Distribution", fontsize=11, fontweight="bold")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
         # Chart 2: Success rate distribution
-        plt.subplot(2, 3, 2)
+        plt.subplot(3, 3, 2)
         success_rates = [r["success_rate"] for r in test_results]
         plt.hist(success_rates, bins=15, alpha=0.7, color="green", edgecolor="black")
         mean_success = float(np.mean(success_rates))
@@ -597,14 +649,14 @@ class CuttingEdgeSystem:
             linewidth=2,
             label=f"Mean: {mean_success:.1f}%",
         )
-        plt.xlabel("Success Rate (%)", fontsize=11)
-        plt.ylabel("Frequency", fontsize=11)
-        plt.title("Pattern Placement Success Rate", fontsize=12, fontweight="bold")
+        plt.xlabel("Success Rate (%)", fontsize=10)
+        plt.ylabel("Frequency", fontsize=10)
+        plt.title("Pattern Placement Success Rate", fontsize=11, fontweight="bold")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
         # Chart 3: Processing time distribution
-        plt.subplot(2, 3, 3)
+        plt.subplot(3, 3, 3)
         times = [r["processing_time"] for r in test_results]
         plt.hist(times, bins=15, alpha=0.7, color="coral", edgecolor="black")
         mean_time = float(np.mean(times))
@@ -615,75 +667,144 @@ class CuttingEdgeSystem:
             linewidth=2,
             label=f"Mean: {mean_time:.2f}s",
         )
-        plt.xlabel("Processing Time (s)", fontsize=11)
-        plt.ylabel("Frequency", fontsize=11)
-        plt.title("Computational Efficiency", fontsize=12, fontweight="bold")
+        plt.xlabel("Processing Time (s)", fontsize=10)
+        plt.ylabel("Frequency", fontsize=10)
+        plt.title("Computational Efficiency", fontsize=11, fontweight="bold")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # Chart 4: Utilization vs Number of Patterns
-        plt.subplot(2, 3, 4)
-        num_patterns = [r["num_patterns"] for r in test_results]
-        plt.scatter(
-            num_patterns,
-            utilizations,
-            alpha=0.6,
-            s=100,
-            c="steelblue",
-            edgecolors="black",
-        )
-        plt.xlabel("Number of Patterns", fontsize=11)
-        plt.ylabel("Utilization (%)", fontsize=11)
-        plt.title("Utilization vs Pattern Count", fontsize=12, fontweight="bold")
+        # --- Row 2: Training vs Testing ---
+        
+        # Load training logs
+        train_logs = []
+        try:
+            log_dir = os.path.join(os.path.dirname(charts_dir), "training_logs")
+            log_files = sorted([f for f in os.listdir(log_dir) if f.startswith("training_metrics")])
+            if log_files:
+                last_log = os.path.join(log_dir, log_files[-1])
+                with open(last_log, 'r') as f:
+                    reader = csv.DictReader(f)
+                    train_logs = list(reader)
+        except Exception as e:
+            logger.warning(f"Could not load training logs: {e}")
+
+        # Chart 4: Train vs Test Utilization
+        plt.subplot(3, 3, 4)
+        if train_logs:
+            iters = [int(r["Config_ID"]) for r in train_logs]
+            tr_util = [float(r["Train_Utilization"]) for r in train_logs]
+            val_util = [float(r["Val_Utilization"]) for r in train_logs]
+            plt.plot(iters, tr_util, 'o-', label='Train', color='steelblue', alpha=0.7)
+            plt.plot(iters, val_util, 's-', label='Test (Val)', color='orange', alpha=0.7)
+            plt.axhline(mean_util, color='green', linestyle='--', label='Current Test Set')
+            plt.xlabel("Training Iteration", fontsize=10)
+            plt.ylabel("Utilization (%)", fontsize=10)
+            plt.legend()
+        else:
+            plt.text(0.5, 0.5, "No Training Logs Found", ha='center', va='center')
+        plt.title("Train vs Test: Utilization", fontsize=11, fontweight="bold")
+        plt.grid(True, alpha=0.3)
+        
+        # Chart 5: Train vs Test Success Rate
+        plt.subplot(3, 3, 5)
+        if train_logs:
+            tr_succ = [float(r["Train_Success_Rate"]) for r in train_logs]
+            val_succ = [float(r["Val_Success_Rate"]) for r in train_logs]
+            plt.plot(iters, tr_succ, 'o-', label='Train', color='steelblue', alpha=0.7)
+            plt.plot(iters, val_succ, 's-', label='Test (Val)', color='orange', alpha=0.7)
+            plt.axhline(mean_success, color='green', linestyle='--', label='Current Test Set')
+            plt.xlabel("Training Iteration", fontsize=10)
+            plt.ylabel("Success Rate (%)", fontsize=10)
+            plt.legend()
+        else:
+            plt.text(0.5, 0.5, "No Training Logs Found", ha='center', va='center')
+        plt.title("Train vs Test: Success Rate", fontsize=11, fontweight="bold")
         plt.grid(True, alpha=0.3)
 
-        # Chart 5: Waste area by cloth type
-        plt.subplot(2, 3, 5)
-        cloth_types = [r["cloth_type"] for r in test_results]
-        waste_areas = [r["waste_area"] for r in test_results]
-        unique_types = list(set(cloth_types))
-        type_waste = [
-            np.mean([waste_areas[i] for i, ct in enumerate(cloth_types) if ct == ut])
-            for ut in unique_types
-        ]
-        plt.bar(
-            unique_types, type_waste, alpha=0.7, color="indianred", edgecolor="black"
-        )
-        plt.xlabel("Cloth Type", fontsize=11)
-        plt.ylabel("Average Waste (cm²)", fontsize=11)
-        plt.title("Waste Area by Cloth Type", fontsize=12, fontweight="bold")
-        plt.xticks(rotation=45, ha="right")
-        plt.grid(True, axis="y", alpha=0.3)
+        # --- Row 3: Detail Metrics ---
+        if not extra_metrics:
+            extra_metrics = {}
 
-        # Chart 6: Sample-by-sample performance
-        plt.subplot(2, 3, 6)
-        sample_ids = list(range(1, len(test_results) + 1))
-        plt.plot(
-            sample_ids,
-            utilizations,
-            "o-",
-            label="Utilization",
-            linewidth=2,
-            markersize=6,
-        )
-        plt.plot(
-            sample_ids,
-            success_rates,
-            "s-",
-            label="Success Rate",
-            linewidth=2,
-            markersize=6,
-        )
-        plt.xlabel("Sample ID", fontsize=11)
-        plt.ylabel("Performance (%)", fontsize=11)
-        plt.title("Per-Sample Performance", fontsize=12, fontweight="bold")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        # Chart 6: Defect F1 Scores
+        plt.subplot(3, 3, 6)
+        f1_scores = extra_metrics.get("defect_f1", {"hole": 0, "stain": 0, "line": 0, "freeform": 0})
+        labels = list(f1_scores.keys())
+        values = list(f1_scores.values())
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] # Added red for freeform
+        plt.bar(labels, values, color=colors[:len(labels)], alpha=0.7, edgecolor='black')
+        plt.ylim(0, 1.0)
+        plt.ylabel("F1 Score", fontsize=10)
+        plt.title("Defect Detection Performance", fontsize=11, fontweight="bold")
+        for i, v in enumerate(values):
+            plt.text(i, v + 0.02, f"{v:.2f}", ha='center', fontweight='bold')
+        plt.grid(True, axis='y', alpha=0.3)
+
+        # Chart 7: Utilization vs Pattern Count
+        plt.subplot(3, 3, 7)
+        if test_results:
+            counts = [r["num_patterns"] for r in test_results]
+            utils = [r["utilization"] for r in test_results]
+            # Add some jitter to x for visibility if counts are integers
+            jitter = np.random.normal(0, 0.1, len(counts))
+            plt.scatter(np.array(counts) + jitter, utils, c='steelblue', alpha=0.6, edgecolors='k')
+            
+            # Trend line
+            if len(counts) > 1:
+                z = np.polyfit(counts, utils, 1)
+                p = np.poly1d(z)
+                x_range = np.linspace(min(counts), max(counts), 10)
+                plt.plot(x_range, p(x_range), "r--", alpha=0.8, label=f"Trend")
+                
+            plt.xlabel("Number of Patterns", fontsize=10)
+            plt.ylabel("Utilization (%)", fontsize=10)
+            plt.title("Utilization vs Pattern Count", fontsize=11, fontweight="bold")
+            plt.grid(True, alpha=0.3)
+        else:
+            plt.text(0.5, 0.5, "No Data", ha='center')
+
+        # Chart 8: Per Sample Utilization
+        plt.subplot(3, 3, 8)
+        if test_results:
+            sample_ids = [r["sample_id"] for r in test_results]
+            utils = [r["utilization"] for r in test_results]
+            colors = plt.cm.viridis(np.linspace(0, 1, len(utils)))
+            bars = plt.bar(sample_ids, utils, color=colors, alpha=0.8)
+            plt.axhline(mean_util, color='r', linestyle='--', label='Mean')
+            plt.xlabel("Sample ID", fontsize=10)
+            plt.ylabel("Utilization (%)", fontsize=10)
+            plt.title("Per Sample Utilization", fontsize=11, fontweight="bold")
+            # Limit x-ticks if too many samples
+            if len(sample_ids) > 20:
+                plt.xticks(sample_ids[::int(len(sample_ids)/10)], rotation=45)
+            else:
+                plt.xticks(sample_ids)
+            plt.grid(True, axis='y', alpha=0.3)
+        else:
+            plt.text(0.5, 0.5, "No Data", ha='center')
+
+        # Chart 9: Per Sample Success Rate
+        plt.subplot(3, 3, 9)
+        if test_results:
+            sample_ids = [r["sample_id"] for r in test_results]
+            success = [r["success_rate"] for r in test_results]
+            bars = plt.bar(sample_ids, success, color='lightgreen', edgecolor='green', alpha=0.7)
+            plt.axhline(mean_success, color='r', linestyle='--', label='Mean')
+            plt.xlabel("Sample ID", fontsize=10)
+            plt.ylabel("Success Rate (%)", fontsize=10)
+            plt.title("Per Sample Success Rate", fontsize=11, fontweight="bold")
+             # Limit x-ticks if too many samples
+            if len(sample_ids) > 20:
+                plt.xticks(sample_ids[::int(len(sample_ids)/10)], rotation=45)
+            else:
+                plt.xticks(sample_ids)
+            plt.grid(True, axis='y', alpha=0.3)
+        else:
+             plt.text(0.5, 0.5, "No Data", ha='center')
 
         plt.tight_layout()
         plt.savefig(
             os.path.join(charts_dir, "evaluation_comprehensive.png"),
-            dpi=300,
+            dpi=150, # Lower DPI slightly for large image
             bbox_inches="tight",
         )
         plt.close()
@@ -733,19 +854,22 @@ class CuttingEdgeSystem:
         )
         plt.close()
 
-    def run_training(self, epochs: int = 10, batch_size: int = 15):
+    def run_training(
+        self, epochs: int = 10, batch_size: int = 15, optimizer_type: str = "heuristic"
+    ):
         """
-        Run hyperparameter optimization for heuristic fitting algorithm.
-
-        Optimizes parameters by grid searching and evaluating on train/val sets.
-        Saves best configuration to output/best_config.json.
-
+        Run hyperparameter optimization.
+        
         Args:
-            epochs: Not used (kept for compatibility)
-            batch_size: Number of training samples to use per config evaluation
+            epochs: Not used
+            batch_size: Training batch size
+            optimizer_type: "heuristic" or "bayesian"
         """
         logger.info("=== HYPERPARAMETER OPTIMIZATION MODE ===")
-        logger.info("Optimizing heuristic parameters for pattern fitting")
+        logger.info(f"Optimizing parameters using {optimizer_type.upper()} optimizer")
+        
+        # Import optimizers
+        from .training_optimizer import HeuristicOptimizer, BayesianOptimizer
 
         # Scan for training data
         pattern_files, cloth_files = self.scan_images()
@@ -801,21 +925,26 @@ class CuttingEdgeSystem:
         self.fitting_module.load_model()
 
         # Initialize optimizer
-        optimizer = HeuristicOptimizer(self)
+        if optimizer_type == "bayesian":
+            optimizer = BayesianOptimizer(self)
+        else:
+            optimizer = HeuristicOptimizer(self)
 
-        # Define search space (smaller for faster training)
-        param_grid = {
-            "grid_size": [20, 25],  # Grid resolution
-            "rotation_angles": [
-                [0, 90, 180, 270],  # Orthogonal
-                [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way
-            ],
-            "allow_flipping": [True],  # Always allow flipping
-            "max_attempts": [500],  # Fixed for speed
-        }
-
-        # Run optimization
-        results = optimizer.optimize(train_samples, val_samples, param_grid)
+        if optimizer_type == "bayesian":
+            # Bayesian handles its own search space
+            results = optimizer.optimize(train_samples, val_samples)
+        else:
+            # Define search space for heuristic (smaller for faster training)
+            param_grid = {
+                "grid_size": [20, 25],  # Grid resolution
+                "rotation_angles": [
+                    [0, 90, 180, 270],  # Orthogonal
+                    [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way
+                ],
+                "allow_flipping": [True],  # Always allow flipping
+                "max_attempts": [500],  # Fixed for speed
+            }
+            results = optimizer.optimize(train_samples, val_samples, param_grid)
 
         # Apply best configuration
         if results["best_config"]:
@@ -889,6 +1018,19 @@ class CuttingEdgeSystem:
 
         logger.info(f"Evaluating on {len(test_samples)} test samples...")
 
+        # Stats counters
+        defect_stats = {
+            "hole": {"TP": 0, "FP": 0, "FN": 0},
+            "stain": {"TP": 0, "FP": 0, "FN": 0},
+            "line": {"TP": 0, "FP": 0, "FN": 0},
+            "freeform": {"TP": 0, "FP": 0, "FN": 0}
+        }
+        grain_errors = []
+        
+        # New Stats for Charts
+        class_acc_stats = {ptype: {"correct": 0, "total": 0} for ptype in self.pattern_module.pattern_types}
+        dim_errors = [] # List of MAE values (cm)
+
         for i, sample in enumerate(test_samples, 1):
             logger.info(f"Testing sample {i}/{len(test_samples)}...")
 
@@ -902,9 +1044,87 @@ class CuttingEdgeSystem:
 
             if not patterns:
                 continue
+                
+            # --- Pattern Analysis (Class & Dimensions) ---
+            for pat, pat_path in zip(patterns, sample["patterns"]):
+                 # Ground Truth from filename
+                 fname = os.path.basename(pat_path)
+                 gt_w, gt_h = self.pattern_module.extract_dimensions_from_filename(fname)
+                 
+                 # Classification GT (simple heuristic from filename)
+                 gt_type = "other"
+                 for ptype in self.pattern_module.pattern_types:
+                     if ptype in fname.lower():
+                         gt_type = ptype
+                         break
+                 
+                 # Accuracy
+                 if gt_type in class_acc_stats:
+                    if pat.pattern_type == gt_type:
+                        class_acc_stats[gt_type]["correct"] += 1
+                    class_acc_stats[gt_type]["total"] += 1
+                 
+                 # Dimension Error
+                 if gt_w and gt_h:
+                     err_w = abs(pat.width - gt_w)
+                     err_h = abs(pat.height - gt_h)
+                     dim_errors.append((err_w + err_h) / 2)
 
             # Process cloth
             cloth = self.cloth_module.process_image(sample["cloth"])
+            
+            # --- Result Analysis and Scoring ---
+            # Infer ground truth from directory name
+            cloth_dir = os.path.basename(os.path.dirname(sample["cloth"]))
+            
+            gt_defects = {"hole": False, "stain": False, "line": False, "freeform": False}
+            if "Hole" in cloth_dir:
+                gt_defects["hole"] = True
+            elif "Stain" in cloth_dir:
+                gt_defects["stain"] = True
+            elif any(x in cloth_dir for x in ["Lines", "Horizontal", "Vertical"]):
+                gt_defects["line"] = True
+            elif "freeform" in cloth_dir or "free" in cloth_dir:
+                gt_defects["freeform"] = True
+            
+            # Determine predicted defects
+            pred_defects = {"hole": False, "stain": False, "line": False, "freeform": False}
+            if cloth.defects_by_type:
+                for dtype, defects_list in cloth.defects_by_type.items():
+                    if len(defects_list) > 0:
+                        if dtype in pred_defects:
+                            pred_defects[dtype] = True
+            
+            # Check for freeform/irregular shape
+            if cloth.material_properties and cloth.material_properties.get("is_irregular", False):
+                pred_defects["freeform"] = True
+            # Fallback for legacy compatibility
+            elif cloth.defects and len(cloth.defects) > 0:
+                pass 
+
+            # Update Defect Stats
+            for dtype in ["hole", "stain", "line", "freeform"]:
+                if gt_defects[dtype] and pred_defects[dtype]:
+                    defect_stats[dtype]["TP"] += 1
+                elif not gt_defects[dtype] and pred_defects[dtype]:
+                    defect_stats[dtype]["FP"] += 1
+                elif gt_defects[dtype] and not pred_defects[dtype]:
+                    defect_stats[dtype]["FN"] += 1
+            
+            # Grain Direction Analysis
+            if "Horizontal" in cloth_dir:
+                gt_grain = 0.0
+            elif "Vertical" in cloth_dir:
+                gt_grain = 90.0
+            else:
+                gt_grain = None
+                
+            if gt_grain is not None:
+                pred_grain = cloth.material_properties.get("grain_direction", 0)
+                error = abs(pred_grain - gt_grain)
+                if error > 90: # normalize 180 periodicity
+                    error = 180 - error
+                grain_errors.append(error)
 
             # Fit patterns
             result = self.fitting_module.fit_patterns(patterns, cloth)
@@ -949,6 +1169,7 @@ class CuttingEdgeSystem:
             )
 
         # Calculate comprehensive metrics
+        metrics = {}
         if test_results:
             avg_utilization = np.mean([r["utilization"] for r in test_results])
             avg_success = np.mean([r["success_rate"] for r in test_results])
@@ -956,24 +1177,62 @@ class CuttingEdgeSystem:
             avg_time = np.mean([r["processing_time"] for r in test_results])
             total_placed = sum([r["patterns_placed"] for r in test_results])
             total_attempted = sum([r["num_patterns"] for r in test_results])
+            
+            # F1 Scores
+            for dtype in ["hole", "stain", "line", "freeform"]:
+                tp = defect_stats[dtype]["TP"]
+                fp = defect_stats[dtype]["FP"]
+                fn = defect_stats[dtype]["FN"]
+                precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                metrics[f"{dtype}_f1"] = f1
+            
+            # Grain Error
+            if grain_errors:
+                metrics["grain_error_mean"] = getattr(np, "mean")(grain_errors)
+                metrics["grain_error_max"] = getattr(np, "max")(grain_errors)
+            else:
+                metrics["grain_error_mean"] = 0
+                metrics["grain_error_max"] = 0
+                
+            # Class Accuracy
+            total_correct = sum(s["correct"] for s in class_acc_stats.values())
+            total_patterns_cls = sum(s["total"] for s in class_acc_stats.values())
+            metrics["class_accuracy"] = total_correct / total_patterns_cls if total_patterns_cls > 0 else 0
+            
+            # Dim Error
+            metrics["dim_mae"] = getattr(np, "mean")(dim_errors) if dim_errors else 0
+
         else:
             avg_utilization = avg_success = avg_waste = avg_time = 0
             total_placed = total_attempted = 0
+            metrics = {k: 0 for k in ["hole_f1", "stain_f1", "line_f1", "freeform_f1", "grain_error_mean", "class_accuracy", "dim_mae"]}
 
         # Log results
         logger.info("\n" + "=" * 70)
         logger.info("TEST SET EVALUATION RESULTS")
         logger.info("=" * 70)
-        logger.info(f"Samples evaluated: {len(test_results)}")
-        logger.info(f"Average utilization: {avg_utilization:.1f}%")
-        logger.info(f"Average success rate: {avg_success:.1f}%")
-        logger.info(f"Average waste: {avg_waste:.1f} cm²")
-        logger.info(f"Average processing time: {avg_time:.2f}s")
-        logger.info(f"Total patterns placed: {total_placed}/{total_attempted}")
+        logger.info(f"Evaluated {len(test_results)} samples")
+        logger.info(f"Avg Utilization: {avg_utilization:.2f}%")
+        logger.info(f"Avg Success Rate: {avg_success:.2f}%")
+        logger.info(f"Hole Detection F1: {metrics['hole_f1']:.3f}")
+        logger.info(f"Stain Detection F1: {metrics['stain_f1']:.3f}")
+        logger.info(f"Line Defect F1: {metrics['line_f1']:.3f}")
+        logger.info(f"Freeform Detection F1: {metrics['freeform_f1']:.3f}")
+        logger.info(f"Grain Direction Error: {metrics['grain_error_mean']:.1f}°")
+        logger.info(f"Pattern Class Acc: {metrics['class_accuracy']*100:.1f}%")
+        logger.info(f"Dimension MAE: {metrics['dim_mae']:.1f} cm")
         logger.info("=" * 70)
 
         # Save comprehensive results for research paper
-        self._save_evaluation_outputs(test_results, test_samples)
+        extra_metrics = {
+            "defect_f1": {k: metrics[f"{k}_f1"] for k in ["hole", "stain", "line", "freeform"]},
+            "grain_errors": grain_errors,
+            "class_acc_stats": class_acc_stats,
+            "dim_errors": dim_errors
+        }
+        self._save_evaluation_outputs(test_results, test_samples, extra_metrics)
 
         return test_results
 
@@ -1435,9 +1694,9 @@ def main():
     # Mode selection
     parser.add_argument(
         "--mode",
-        choices=["demo", "train", "eval", "fit", "all_cloths"],
+        choices=["demo", "train", "eval", "fit", "all_cloths", "baseline"],
         default="demo",
-        help="Operation mode: demo, train, eval, fit, or all_cloths",
+        help="Operation mode: demo, train, eval, fit, or all_cloths, baseline",
     )
 
     # Pattern and cloth selection
@@ -1468,16 +1727,30 @@ def main():
         default=TRAINING["EPOCHS"],
         help="Number of training epochs",
     )
+    parser.add_argument(
+        "--optimizer",
+        choices=["heuristic", "bayesian"],
+        default="heuristic",
+        help="Optimizer type for training mode",
+    )
 
     # Other options
     parser.add_argument("--base_dir", help="Base directory for the application")
     parser.add_argument("--output", help="Custom output directory for results")
+    parser.add_argument(
+        "--no_scale",
+        action="store_true",
+        help="Disable automatic pattern scaling (force 1.0x scale)",
+    )
 
     # Parse arguments
     args = parser.parse_args()
 
+    # Determine auto_scale setting
+    auto_scale = False if args.no_scale else None
+
     # Initialize system
-    system = CuttingEdgeSystem(args.base_dir)
+    system = CuttingEdgeSystem(args.base_dir, auto_scale=auto_scale)
 
     # Handle custom output directory
     if args.output:
@@ -1491,7 +1764,7 @@ def main():
 
     elif args.mode == "train":
         # Training mode
-        system.run_training(args.epochs)
+        system.run_training(args.epochs, optimizer_type=args.optimizer)
 
     elif args.mode == "eval":
         # Evaluation mode
@@ -1533,6 +1806,23 @@ def main():
 
         # Run fitting task
         system.run_fitting_task(pattern_paths, cloth_path)
+
+    elif args.mode == "baseline":
+        # Baseline mode (same as fit but with baseline_mode=True)
+        pattern_paths = []
+        if args.patterns:
+            pattern_paths = args.patterns
+        elif args.pattern_dir:
+            pattern_dir = Path(args.pattern_dir)
+            if pattern_dir.exists():
+                for ext in SYSTEM["IMAGE_EXTENSIONS"]:
+                    pattern_paths.extend([str(f) for f in pattern_dir.glob(f"*.{ext}")])
+
+        if not pattern_paths or not args.cloth:
+            logger.error("Please specify patterns and cloth for baseline mode")
+            return
+
+        system.run_fitting_task(pattern_paths, args.cloth, baseline_mode=True)
 
     elif args.mode == "all_cloths":
         # All cloths mode - maximize pattern fitting

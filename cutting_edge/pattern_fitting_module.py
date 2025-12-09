@@ -122,7 +122,7 @@ class PatternFittingModule:
     4. Visualizing fitting results
     """
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, auto_scale: Optional[bool] = None):
         """Initialize the pattern fitting module."""
         if model_path is None:
             model_path = os.path.join(
@@ -133,6 +133,12 @@ class PatternFittingModule:
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and SYSTEM["USE_GPU"] else "cpu"
         )
+        
+        # Configure auto-scaling (instance override > global config)
+        if auto_scale is None:
+            self.auto_scale = FITTING["AUTO_SCALE"]
+        else:
+            self.auto_scale = auto_scale
 
         # Create placement optimizer if neural optimization is enabled
         self.use_neural = FITTING["USE_NEURAL_OPTIMIZER"]
@@ -151,6 +157,104 @@ class PatternFittingModule:
 
         logger.info(f"Pattern Fitting Module initialized. Using device: {self.device}")
         logger.info(f"Using neural optimization: {self.use_neural}")
+
+    def scale_pattern(self, pattern: Pattern, scale: float) -> Pattern:
+        """
+        Create a new Pattern object scaled by the given factor.
+        """
+        # Scale dimensions
+        new_width = pattern.width * scale
+        new_height = pattern.height * scale
+        new_area = new_width * new_height
+        
+        # Scale contour if present
+        new_contour = None
+        if pattern.contour is not None and len(pattern.contour) > 0:
+            new_contour = pattern.contour * scale
+            
+        # Create new pattern object
+        return Pattern(
+            id=pattern.id, # Keep ID or generate new? Ideally new hash or same ID if logical identity
+            name=f"{pattern.name}_x{scale:.2f}",
+            pattern_type=pattern.pattern_type,
+            width=new_width,
+            height=new_height,
+            area=new_area,
+            contour=new_contour,
+            confidence=pattern.confidence,
+            key_points=[(x*scale, y*scale) for x, y in pattern.key_points] if pattern.key_points else None
+        )
+
+    def find_optimal_scale(self, patterns: List[Pattern], cloth: ClothMaterial) -> float:
+        """
+        Find the largest scale factor that fits the required percentage of patterns.
+        Uses binary search and coarse resolution for performance.
+        """
+        if not self.auto_scale:
+            return 1.0
+            
+        scale_step = FITTING.get("SCALE_STEP", 0.1)
+        max_scale = FITTING.get("MAX_SCALE", 3.0)
+        min_patterns_percent = FITTING.get("MIN_PATTERNS_PERCENT", 1.0)
+        
+        logger.info(f"Finding optimal scale (max: {max_scale})...")
+        
+        # Binary search parameters
+        low = 1.0
+        high = max_scale
+        best_valid_scale = 1.0
+        
+        # Coarse resolution for faster checking (5cm instead of 1cm)
+        # This speeds up the check by ~25x
+        check_resolution = 5.0 
+        
+        # Binary search iterations
+        # specific precision target around 0.1 (scale_step)
+        
+        while high - low > scale_step / 2:
+            mid = (low + high) / 2
+            # Round to nearest step to avoid weird floats
+            mid = round(mid / scale_step) * scale_step
+            
+            if mid <= 1.0: # Don't go below 1.0
+                low = mid + scale_step/2 # Move up
+                continue
+                
+            if mid == low or mid == high:
+                break
+
+            # Create scaled patterns
+            scaled_patterns = [self.scale_pattern(p, mid) for p in patterns]
+            
+            # Quick feasibility check
+            # Turn off logging for these checks
+            prev_level = logger.level
+            logger.setLevel(logging.WARNING)
+            
+            try:
+                # Use baseline_mode=True and coarse resolution
+                result = self.fit_patterns(
+                    scaled_patterns, 
+                    cloth, 
+                    baseline_mode=True, 
+                    is_optimization_pass=True,
+                    search_resolution=check_resolution
+                )
+            finally:
+                logger.setLevel(prev_level)
+                
+            success_rate = result["patterns_placed"] / len(patterns)
+            
+            if success_rate >= min_patterns_percent:
+                best_valid_scale = max(best_valid_scale, mid)
+                low = mid # Try higher
+                # logger.info(f"Scale {mid:.2f} fits ({success_rate*100:.0f}%)")
+            else:
+                high = mid # Try lower
+                # logger.info(f"Scale {mid:.2f} fails ({success_rate*100:.0f}%)")
+        
+        logger.info(f"Found optimal scale: {best_valid_scale:.2f}")
+        return best_valid_scale
 
     def create_pattern_polygon(
         self,
@@ -748,6 +852,29 @@ class PatternFittingModule:
 
             attempts += 1
 
+        # Fallback: If heuristic search failed, try dense baseline search
+        # This fixes the discrepancy where find_optimal_scale says it fits (using dense search)
+        # but the sparse grid search here misses it.
+        if best_placement is None:
+            logger.info(f"Heuristic search failed for {pattern.name}, attempting dense baseline fallback...")
+            # Use 5.0cm resolution (same as find_optimal_scale's fast check)
+            # This ensures that if the scaling check passed, we will likely find that spot again
+            fallback_placement = self._find_baseline_placement(
+                pattern, cloth, existing_placements, search_resolution=5.0
+            )
+            
+            if fallback_placement:
+                # Calculate proper score for this placement (baseline returns dummy 1.0)
+                fallback_score = self.calculate_placement_score(
+                    pattern, 
+                    fallback_placement.placement_polygon, 
+                    cloth_poly, 
+                    existing_placements
+                )
+                fallback_placement.score = fallback_score
+                best_placement = fallback_placement
+                logger.info(f"Fallback successful: Placed {pattern.name} at {best_placement.position}")
+
         # Log result with early stopping info
         if best_placement:
             log_msg = (
@@ -797,88 +924,175 @@ class PatternFittingModule:
         total_loss.backward()
         self.optimizer_optim.step()
 
-    def fit_patterns(self, patterns: List[Pattern], cloth: ClothMaterial) -> Dict:
+    def fit_patterns(
+        self, 
+        patterns: List[Pattern], 
+        cloth: ClothMaterial, 
+        baseline_mode: bool = False,
+        is_optimization_pass: bool = False,
+        search_resolution: Optional[float] = None
+    ) -> Dict:
         """
-        Main method to fit multiple patterns onto a cloth.
-        Returns fitting results and metrics.
-
-        Enhanced with Issue A: Pre-filtering of patterns that cannot fit.
+        Fit multiple patterns onto a cloth material.
+        
+        Args:
+            patterns: List of patterns to fit
+            cloth: Cloth to fit onto
+            baseline_mode: If True, uses strict BLF baseline without optimization
+            
+        Returns:
+            Dictionary with fitting results and metrics
         """
-        logger.info(
-            f"Fitting {len(patterns)} patterns onto {cloth.cloth_type} material "
-            f"({cloth.width}x{cloth.height} cm)"
-        )
+        start_time = datetime.now()
+        
+        # Auto-scaling (only on main pass, not recursive optimization passes)
+        if not is_optimization_pass and FITTING.get("AUTO_SCALE", False):
+            optimal_scale = self.find_optimal_scale(patterns, cloth)
+            if optimal_scale > 1.0:
+                logger.info(f"Scaling all patterns by {optimal_scale:.2f}x")
+                patterns = [self.scale_pattern(p, optimal_scale) for p in patterns]
 
-        # Issue A: Pre-filter patterns that cannot possibly fit
+        
+        # Issue A: Pre-filter patterns that definitely won't fit
         valid_patterns, invalid_patterns = self._prefilter_patterns(patterns, cloth)
+        
+        # Sort patterns
+        if baseline_mode:
+            # Baseline: Sort by area (descending) as requested by Dr. Karaman
+            # "Sort patterns by height or area"
+            sorted_patterns = sorted(valid_patterns, key=lambda p: p.area, reverse=True)
+            logger.info("Baseline Mode: Sorted patterns by area (descending)")
+        else:
+            # Normal: Intelligent sorting (usually by area too, but can be customized)
+            sorted_patterns = sorted(valid_patterns, key=lambda p: p.area, reverse=True)
 
-        if invalid_patterns:
-            logger.warning(
-                f"Filtered out {len(invalid_patterns)}/{len(patterns)} patterns "
-                f"that are too large for the cloth"
-            )
-
-        # Sort valid patterns by area (larger patterns first)
-        sorted_patterns = sorted(valid_patterns, key=lambda p: p.area, reverse=True)
-
-        # Try to place each pattern
-        placed_patterns = []
-        failed_patterns = list(invalid_patterns)  # Start with pre-filtered patterns
-
+        placements: List[PlacementResult] = []
+        waste_area = 0.0
+        
+        # Process each pattern
         for i, pattern in enumerate(sorted_patterns):
-            logger.info(
-                f"Placing pattern {i + 1}/{len(patterns)}: {pattern.name} "
-                f"({pattern.pattern_type}, {pattern.width}x{pattern.height} cm)"
-            )
-
-            # Find best placement
-            placement = self.find_best_placement(pattern, cloth, placed_patterns)
-
-            if placement:
-                placed_patterns.append(placement)
-                logger.info(f"  ✓ Successfully placed {pattern.name}")
+            logger.info(f"Fitting pattern {i+1}/{len(sorted_patterns)}: {pattern.name}")
+            
+            if baseline_mode:
+                # Use strict BLF baseline
+                placement = self._find_baseline_placement(pattern, cloth, placements, search_resolution)
             else:
-                failed_patterns.append(pattern)
-                logger.info(f"  ✗ Failed to place {pattern.name}")
+                # Use standard optimize finding
+                placement = self.find_best_placement(pattern, cloth, placements)
+            
+            if placement:
+                placements.append(placement)
+                logger.info(
+                    f"Placed {pattern.name} at ({placement.position[0]:.1f}, "
+                    f"{placement.position[1]:.1f})"
+                )
+            else:
+                logger.warning(f"Could not fit pattern {pattern.name}")
 
         # Calculate metrics
-        total_pattern_area = sum(p.pattern.area for p in placed_patterns)
-        utilization = (
-            (total_pattern_area / cloth.usable_area * 100)
-            if cloth.usable_area > 0
-            else 0.0
-        )
-        success_rate = (
-            (len(placed_patterns) / len(patterns)) * 100 if len(patterns) > 0 else 0.0
-        )
-        waste_area = (
-            cloth.usable_area - total_pattern_area
-            if cloth.usable_area > 0
-            else total_pattern_area
-        )
-
-        # Create result dictionary
-        result = {
-            "placed_patterns": placed_patterns,
-            "failed_patterns": failed_patterns,
-            "utilization_percentage": utilization,
-            "success_rate": success_rate,
-            "total_pattern_area": total_pattern_area,
-            "waste_area": waste_area,
-            "cloth_dimensions": (cloth.width, cloth.height),
-            "cloth_usable_area": cloth.usable_area,
-            "patterns_placed": len(placed_patterns),
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        # Calculate utilization
+        patterns_area = sum(p.pattern.area for p in placements)
+        if cloth.total_area > 0:
+            utilization = (patterns_area / cloth.total_area) * 100
+            waste_area = cloth.total_area - patterns_area
+        else:
+            utilization = 0
+            waste_area = 0
+            
+        # Identify failed patterns
+        placed_pattern_ids = {id(p.pattern) for p in placements}
+        failed_patterns = [p for p in patterns if id(p) not in placed_pattern_ids]
+            
+        return {
+            "placements": placements,
+            "placed_patterns": placements, # Alias for visualization
+            "patterns_placed": len(placements),
+            "num_patterns": len(patterns),
             "patterns_total": len(patterns),
+            "utilization_percentage": utilization,
+            "waste_area": waste_area,
+            "total_pattern_area": patterns_area,
+            "processing_time": processing_time,
+            "success_rate": (len(placements) / len(patterns) * 100) if patterns else 0,
+            "cloth_id": cloth.id,
+            "cloth_area": cloth.total_area,
+            "cloth_dimensions": f"{cloth.width}x{cloth.height}",
+            "cloth_usable_area": cloth.usable_area,
+            "invalid_patterns": len(invalid_patterns),
+            "failed_patterns": failed_patterns # Added in previous steps? Wait, I didn't see failed_patterns calculation in view.
         }
 
-        logger.info(
-            f"Fitting complete: {len(placed_patterns)}/{len(patterns)} patterns placed"
-        )
-        logger.info(
-            f"Material utilization: {utilization:.1f}%, Waste: {waste_area:.1f} cm²"
-        )
+    def _find_baseline_placement(
+        self, 
+        pattern: Pattern, 
+        cloth: ClothMaterial, 
+        existing_placements: List[PlacementResult],
+        search_resolution: Optional[float] = None
+    ) -> Optional[PlacementResult]:
+        """
+        Find placement using strict Bottom-Left-Fill (BLF) strategy.
+        
+        Strategy:
+        1. Scan grid from Bottom (y=0) to Top
+        2. Scan grid from Left (x=0) to Right
+        3. First valid position is taken immediately (Greedy)
+        4. No scoring - simple binary fit check
+        5. Rotations: 0, 90, 180, 270 only
+        """
+        cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
+        
+        # BLF Resolution (step size)
+        resolution = search_resolution if search_resolution is not None else FITTING.get("BLF_RESOLUTION", 1.0)
+        
+        # Strict rotations as requested
+        rotations = [0, 90, 180, 270]
+        
+        # Grid scan limits
+        max_y = int(cloth.height)
+        max_x = int(cloth.width)
+        
+        # Iterate Y first (Bottom-Left preference means minimizing Y is primary, or minimizing X?)
+        # "Place each at lowest y, then lowest x" -> Nested loop: outer Y, inner X
+        for y in np.arange(0, max_y, resolution):
+            for x in np.arange(0, max_x, resolution):
+                
+                # Check all allowed rotations at this position
+                for rotation in rotations:
+                    flipped = False # No flipping for strict baseline unless specified
+                    
+                    # Create test polygon
+                    try:
+                        pattern_poly = self.create_pattern_polygon(
+                            pattern, (x, y), rotation, flipped
+                        )
+                    except Exception:
+                        continue
+                        
+                    # Fast check: Bounds
+                    if not cloth_poly.contains(pattern_poly):
+                        continue
+                        
+                    # Strict check: Overlap and Defects
+                    is_valid, _ = self.is_valid_placement(
+                        pattern_poly, cloth_poly, defect_polys, existing_placements
+                    )
+                    
+                    if is_valid:
+                        # FOUND IT! Greedy return immediately.
+                        return PlacementResult(
+                            pattern=pattern,
+                            position=(x, y),
+                            rotation=rotation,
+                            flipped=flipped,
+                            score=1.0, # Dummy score
+                            placement_polygon=pattern_poly
+                        )
+                        
+        return None
 
-        return result
 
     def visualize(
         self,

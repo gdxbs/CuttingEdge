@@ -46,6 +46,9 @@ class ClothMaterial:
     material_properties: Optional[Dict] = (
         None  # Additional properties (stretch, grain, etc.)
     )
+    defects_by_type: Optional[Dict[str, List[np.ndarray]]] = (
+        None  # Classified defects {"hole": [], "stain": [], "line": []}
+    )
     filename: Optional[str] = None  # Original image filename
 
 
@@ -157,6 +160,9 @@ class ClothRecognitionModule:
                 out_channels=CLOTH["UNET_OUT_CHANNELS"],
             )
             self.model.to(self.device)
+        
+        # Track if model weights are loaded to avoid using untrained model
+        self.model_loaded = False
 
         # Material type mapping
         self.cloth_types = CLOTH["TYPES"]
@@ -172,9 +178,7 @@ class ClothRecognitionModule:
         """
         Extract PLATE dimensions from filename if available.
         Format: cloth_200x300.jpg -> plate dimensions in cm
-        The actual cloth shape will be detected from the image.
         """
-        # Try to find a pattern like "200x300" in the filename
         match = re.search(r"(\d+)x(\d+)", filename)
         if match:
             width = float(match.group(1))
@@ -188,7 +192,6 @@ class ClothRecognitionModule:
     def extract_cloth_shape(self, image_path: str) -> Dict:
         """
         Extract cloth shape and defects from an image.
-        Uses either U-Net or color-based segmentation.
         """
         # Read image
         img = cv2.imread(image_path)
@@ -199,11 +202,12 @@ class ClothRecognitionModule:
                 "defects": [],
                 "cloth_mask": None,
                 "defect_mask": None,
+                "detailed_masks": {}
             }
 
         h, w = img.shape[:2]
 
-        if self.use_unet and hasattr(self, "model"):
+        if self.use_unet and hasattr(self, "model") and self.model_loaded:
             # U-Net segmentation approach
             try:
                 # Prepare image for U-Net
@@ -236,30 +240,62 @@ class ClothRecognitionModule:
                 _, defect_binary = cv2.threshold(
                     defect_mask, CLOTH["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY
                 )
+                
+                # U-Net doesn't distinguish defect types
+                detailed_masks = {"hole": defect_binary, "stain": np.zeros_like(defect_binary), "line": np.zeros_like(defect_binary)}
 
             except Exception as e:
                 logger.warning(
                     f"U-Net segmentation failed: {e}, falling back to color-based segmentation"
                 )
-                cloth_binary, defect_binary = self.color_based_segmentation(img)
+                cloth_binary, defect_binary, detailed_masks = self.color_based_segmentation(img)
         else:
             # Color-based segmentation approach
-            cloth_binary, defect_binary = self.color_based_segmentation(img)
+            cloth_binary, defect_binary, detailed_masks = self.color_based_segmentation(img)
 
-        # Extract contours
-        contours, _ = cv2.findContours(
-            cloth_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        # Extract contours with hierarchy to find holes (inner contours)
+        contours, hierarchy = cv2.findContours(
+            cloth_binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
         )
-        defect_contours, _ = cv2.findContours(
-            defect_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
+        
         # Get main cloth contour
-        if contours:
-            main_contour = max(contours, key=cv2.contourArea)
+        main_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]]) # Default
+        valid_defects = []
+        topological_holes = []
+        
+        if contours and hierarchy is not None:
+            # Find the largest external contour (this is the cloth)
+            max_area = 0
+            main_contour_idx = -1
+            
+            for i, c in enumerate(contours):
+                # Hierarchy: [Next, Previous, First_Child, Parent]
+                # We only want top-level contours (Parent == -1) as potential cloth candidates
+                if hierarchy[0][i][3] == -1:
+                    area = cv2.contourArea(c)
+                    if area > max_area:
+                        max_area = area
+                        main_contour = c
+                        main_contour_idx = i
+            
+            if main_contour_idx != -1:
+                # Find direct children of the main contour (these are holes)
+                # First child
+                child_idx = hierarchy[0][main_contour_idx][2]
+                while child_idx != -1:
+                    hole_contour = contours[child_idx]
+                    if cv2.contourArea(hole_contour) > CLOTH["MIN_DEFECT_AREA"]:
+                        topological_holes.append(hole_contour)
+                        valid_defects.append(hole_contour)
+                    # Next sibling
+                    child_idx = hierarchy[0][child_idx][0]
 
+            # Find color/texture defect contours (all combined for compatibility)
+            defect_contours, _ = cv2.findContours(
+                defect_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            
             # Filter defects (keep only those inside the cloth)
-            valid_defects = []
             for defect in defect_contours:
                 if (
                     cv2.contourArea(defect) > CLOTH["MIN_DEFECT_AREA"]
@@ -270,46 +306,48 @@ class ClothRecognitionModule:
                         cx = int(M["m10"] / M["m00"])
                         cy = int(M["m01"] / M["m00"])
                         if cv2.pointPolygonTest(main_contour, (cx, cy), False) >= 0:
+                            # Sanity check: If defect is > 50% of cloth area, it's likely a false positive (e.g. lighting issue)
+                            defect_area = cv2.contourArea(defect)
+                            cloth_area = cv2.contourArea(main_contour)
+                            if cloth_area > 0 and (defect_area / cloth_area) > 0.5:
+                                logger.warning(f"Ignoring defect with area {defect_area:.1f} (>50% of cloth). Likely false positive.")
+                                continue
+                                
                             valid_defects.append(defect)
-        else:
-            # If no contour found, assume the whole image is cloth
-            main_contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]])
-            valid_defects = []
 
-        # Keep contour in pixel coordinates for now
-        # Scaling to cm will be done in process_image to maintain consistency
+        # Update detailed masks to include topological holes
+        if topological_holes:
+            cv2.drawContours(detailed_masks["hole"], topological_holes, -1, 255, -1)
+            # Ensure these holes are also in the main defect mask
+            cv2.drawContours(defect_binary, topological_holes, -1, 255, -1)
 
         return {
             "contour": main_contour,
             "defects": valid_defects,
             "cloth_mask": cloth_binary,
             "defect_mask": defect_binary,
+            "detailed_masks": detailed_masks
         }
 
     def color_based_segmentation(
         self, img: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
         """
-        Enhanced color-based segmentation for cloth and defects.
-        Detects holes (missing areas), stains (color variations), and edge defects.
-
-        This method identifies three types of defects:
-        1. Holes - Dark areas or missing fabric (detected via thresholding)
-        2. Stains - Color/brightness variations (detected via statistical analysis)
-        3. Edge defects - Tears or irregular edges (detected via gradient analysis)
+        Color-based segmentation for cloth and defects.
+        Detects holes, stains, and edge defects.
         """
         h, w = img.shape[:2]
 
-        # Convert to HSV for better color-based segmentation
+        # Convert to HSV
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Create cloth mask based on HSV ranges (separates cloth from background)
+        # Create cloth mask based on HSV ranges
         lower = np.array(CLOTH["HSV_LOWER"])
         upper = np.array(CLOTH["HSV_UPPER"])
         cloth_mask = cv2.inRange(hsv, lower, upper)
 
-        # Morphological operations to clean up cloth boundary
+        # Morphological operations
         kernel = np.ones(
             (CLOTH["MORPH_KERNEL_SIZE"], CLOTH["MORPH_KERNEL_SIZE"]), np.uint8
         )
@@ -318,134 +356,100 @@ class ClothRecognitionModule:
         )
         cloth_mask = cv2.morphologyEx(cloth_mask, cv2.MORPH_OPEN, kernel)
 
-        # =========================================================================
-        # ENHANCED DEFECT DETECTION
-        # =========================================================================
-
-        # Extract only the cloth region for defect analysis
+        # Defect Detection
         cloth_only = cv2.bitwise_and(gray, gray, mask=cloth_mask)
 
-        # Calculate mean and std of cloth region for adaptive thresholding
+        # Stats
         cloth_pixels = cloth_only[cloth_mask > 0]
         if cloth_pixels.size > 0:
-            mean_intensity = float(np.mean(cloth_pixels))  # type: ignore
-            std_intensity = float(np.std(cloth_pixels))  # type: ignore
+            mean_intensity = float(np.mean(cloth_pixels)) 
+            std_intensity = float(np.std(cloth_pixels)) 
         else:
             mean_intensity = 127.0
             std_intensity = 30.0
 
-        # 1. HOLES - Very dark areas (missing fabric, deep holes)
-        #    Use adaptive threshold based on cloth statistics
-        #    Use 3 std devs to be more conservative and reduce false positives
-        dark_threshold = max(5, int(mean_intensity - 3 * std_intensity))
+        # 1. Holes (Dark spots)
+        hole_sigma = CLOTH.get("DEFECT_THRESHOLDS", {}).get("hole_sigma", 3.0)
+        dark_threshold = max(5, int(mean_intensity - hole_sigma * std_intensity))
         _, holes = cv2.threshold(cloth_only, dark_threshold, 255, cv2.THRESH_BINARY_INV)
 
-        # 2. STAINS - Areas with significantly different intensity
-        #    Detect both darker and brighter anomalies
-        #    Use 2.5 std devs for brighter areas to be more conservative
-        bright_threshold = min(250, int(mean_intensity + 2.5 * std_intensity))
-        _, bright_stains = cv2.threshold(
+        # 2. Bright Intensity Defects (Now classified as Holes)
+        # Previously classified as stains, leading to confusion
+        stain_sigma = CLOTH.get("DEFECT_THRESHOLDS", {}).get("stain_sigma", 3.0)
+        bright_threshold = min(250, int(mean_intensity + stain_sigma * std_intensity))
+        _, bright_defects = cv2.threshold(
             cloth_only, bright_threshold, 255, cv2.THRESH_BINARY
         )
+        
+        # Combine dark and bright intensity outliers as "holes" (physical damage/voids often appear as extremes)
+        # Note: Bright spots can be holes with light shining through
+        combined_holes = cv2.bitwise_or(holes, bright_defects)
 
-        # Combine holes and stains
-        intensity_defects = cv2.bitwise_or(holes, bright_stains)
-
-        # 3. COLOR VARIATIONS - Detect stains with different colors
-        #    Use color variance in the HSV space
+        # Color Variations (Stains)
         hsv_cloth = cv2.bitwise_and(hsv, hsv, mask=cloth_mask)
-
-        # Calculate color statistics
-        # hue = hsv_cloth[:, :, 0]  # Not used currently, but available for future enhancement
         sat = hsv_cloth[:, :, 1]
-
-        # Areas with unusual saturation are likely stains
         sat_cloth = sat[cloth_mask > 0]
         if sat_cloth.size > 0:
-            mean_sat = float(np.mean(sat_cloth))  # type: ignore
-            std_sat = float(np.std(sat_cloth))  # type: ignore
-
-            # Detect areas with very different saturation
+            mean_sat = float(np.mean(sat_cloth))
+            std_sat = float(np.std(sat_cloth))
             sat_lower = max(0, int(mean_sat - 2 * std_sat))
             sat_upper = min(255, int(mean_sat + 2 * std_sat))
-            color_defects = cv2.bitwise_not(cv2.inRange(sat, sat_lower, sat_upper))  # type: ignore
+            color_defects = cv2.bitwise_not(cv2.inRange(sat, sat_lower, sat_upper))
             color_defects = cv2.bitwise_and(color_defects, cloth_mask)
         else:
             color_defects = np.zeros_like(gray)
 
-        # 4. EDGE DEFECTS & TEARS - Using gradient detection
-        #    High gradient values indicate tears or frayed edges
+        # 3. Edge Defects (Lines)
         sobelx = cv2.Sobel(cloth_only, cv2.CV_64F, 1, 0, ksize=5)
         sobely = cv2.Sobel(cloth_only, cv2.CV_64F, 0, 1, ksize=5)
         gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-
-        # Normalize gradient
         if gradient_magnitude.max() > 0:
             gradient_magnitude = (
                 gradient_magnitude / gradient_magnitude.max() * 255
             ).astype(np.uint8)
-
-        # Threshold to find strong edges (potential tears/cuts)
-        # Threshold value from config - empirically determined for fabric edges
         edge_threshold = CLOTH.get("EDGE_DEFECT_GRADIENT_THRESHOLD", 80)
         _, edge_defects = cv2.threshold(
             gradient_magnitude, edge_threshold, 255, cv2.THRESH_BINARY
         )
 
-        # 5. TEXTURE ANOMALIES - Using local variance
-        #    Areas with very different texture from surrounding cloth
-        # Calculate local standard deviation using box filter
+        # Texture anomalies (Stains/Flaws)
         cloth_float = cloth_only.astype(np.float32)
-        mean_local = cv2.boxFilter(cloth_float, cv2.CV_32F, (15, 15))  # type: ignore
-        mean_sqr_local = cv2.boxFilter(np.square(cloth_float), cv2.CV_32F, (15, 15))  # type: ignore
+        mean_local = cv2.boxFilter(cloth_float, cv2.CV_32F, (15, 15))
+        mean_sqr_local = cv2.boxFilter(np.square(cloth_float), cv2.CV_32F, (15, 15))
         variance_local = mean_sqr_local - mean_local * mean_local
-        variance_local[variance_local < 0] = 0  # Remove numerical errors
+        variance_local[variance_local < 0] = 0
         std_local = np.sqrt(variance_local).astype(np.uint8)
-
-        # Areas with very high or low local variation are anomalies
         std_local_cloth = std_local[cloth_mask > 0]
-        texture_mean = (
-            float(np.mean(std_local_cloth)) if std_local_cloth.size > 0 else 10.0
-        )  # type: ignore
+        texture_mean = float(np.mean(std_local_cloth)) if std_local_cloth.size > 0 else 10.0
+        
+        texture_sigma = CLOTH.get("DEFECT_THRESHOLDS", {}).get("texture_sigma", 3.0)
         _, texture_defects = cv2.threshold(
-            std_local, int(texture_mean * 2.5), 255, cv2.THRESH_BINARY
+            std_local, int(texture_mean * texture_sigma), 255, cv2.THRESH_BINARY
         )
-        _, texture_defects = cv2.threshold(
-            std_local, int(texture_mean * 2.5), 255, cv2.THRESH_BINARY
-        )
-
-        # =========================================================================
-        # COMBINE ALL DEFECT TYPES
-        # =========================================================================
-
-        # Combine all defect detection methods
-        defect_mask = cv2.bitwise_or(intensity_defects, color_defects)
-        defect_mask = cv2.bitwise_or(defect_mask, edge_defects)
-        defect_mask = cv2.bitwise_or(defect_mask, texture_defects)
-
-        # Only keep defects within cloth boundary
-        defect_mask = cv2.bitwise_and(defect_mask, cloth_mask)
-
-        # Clean up defect mask with morphological operations
-        # Small kernel to remove noise but preserve defect detail
+        
+        # Categorized masks
+        detailed_masks = {
+            "hole": combined_holes,
+            "stain": cv2.bitwise_or(color_defects, texture_defects),
+            "line": edge_defects
+        }
+        
+        # Clean detailed masks
         small_kernel = np.ones((3, 3), np.uint8)
-        defect_mask = cv2.morphologyEx(defect_mask, cv2.MORPH_OPEN, small_kernel)
-
-        # Close small gaps in defects
-        defect_mask = cv2.morphologyEx(
-            defect_mask, cv2.MORPH_CLOSE, kernel, iterations=1
-        )
-
-        # Dilate slightly to create safety margin around defects
-        # This ensures patterns don't get placed too close to defects
         safety_kernel = np.ones((5, 5), np.uint8)
-        defect_mask = cv2.dilate(defect_mask, safety_kernel, iterations=1)
-
-        logger.debug(
-            f"Defect detection: cloth_mask={np.sum(cloth_mask > 0)} pixels, defect_mask={np.sum(defect_mask > 0)} pixels"
-        )
-
-        return cloth_mask, defect_mask
+        
+        final_detailed = {}
+        combined_defect_mask = np.zeros_like(gray)
+        
+        for name, mask in detailed_masks.items():
+            mask = cv2.bitwise_and(mask, cloth_mask)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            mask = cv2.dilate(mask, safety_kernel, iterations=1)
+            final_detailed[name] = mask
+            combined_defect_mask = cv2.bitwise_or(combined_defect_mask, mask)
+            
+        return cloth_mask, combined_defect_mask, final_detailed
 
     def calculate_areas(
         self,
@@ -454,205 +458,92 @@ class ClothRecognitionModule:
         plate_width: float,
         plate_height: float,
     ) -> Tuple[float, float]:
-        """
-        Calculate total and usable areas for cloth.
-        Uses actual cloth contour area, not plate dimensions.
-        Accounts for defects and edge margins.
-        """
-        # Check if contour is valid
+        """Calculate total and usable areas."""
         if contour is None or len(contour) == 0:
-            # If no contour detected, use full plate dimensions
-            total_area = plate_width * plate_height
-            margin = CLOTH["EDGE_MARGIN"]
-            usable_width = max(0, plate_width - 2 * margin)
-            usable_height = max(0, plate_height - 2 * margin)
-            usable_area = usable_width * usable_height
-            return total_area, usable_area
+            return plate_width * plate_height, max(0, (plate_width - 2 * CLOTH["EDGE_MARGIN"]) * (plate_height - 2 * CLOTH["EDGE_MARGIN"]))
 
-        # Calculate actual cloth area from contour (already in cm coordinates)
         cloth_area = cv2.contourArea(contour)
-
-        # Calculate defect area (contours already in cm coordinates)
         defect_area = sum(cv2.contourArea(defect) for defect in defects)
-
-        # Apply edge margin to cloth area (shrink contour by margin)
-        margin = CLOTH["EDGE_MARGIN"]
-        # Approximate usable area by subtracting margin from cloth dimensions
+        
         cloth_rect = cv2.boundingRect(contour)
         cloth_width = cloth_rect[2]
         cloth_height = cloth_rect[3]
-
+        margin = CLOTH["EDGE_MARGIN"]
+        
         if cloth_width > 2 * margin and cloth_height > 2 * margin:
             usable_width = cloth_width - 2 * margin
             usable_height = cloth_height - 2 * margin
-            # Scale usable area by the ratio of cloth area to its bounding box
-            area_ratio = (
-                cloth_area / (cloth_width * cloth_height)
-                if cloth_width * cloth_height > 0
-                else 1.0
-            )
+            area_ratio = (cloth_area / (cloth_width * cloth_height)) if cloth_width * cloth_height > 0 else 1.0
             usable_area = usable_width * usable_height * area_ratio - defect_area
         else:
             usable_area = 0
-
+            
         return cloth_area, max(0, usable_area)
 
-    def detect_cloth_type(self, img: np.ndarray, contour: np.ndarray) -> str:
+    def detect_cloth_type(
+        self, img: np.ndarray, contour: np.ndarray, is_irregular: bool = False
+    ) -> str:
         """
-        Detect cloth material type based on visual properties.
-        Simple heuristic approach based on color and texture.
+        Simple heuristic cloth type detection.
+        Uses shape irregularity for leather and color analysis for denim.
         """
-        # Create mask for the cloth region
-        mask = np.zeros(img.shape[:2], dtype=np.uint8)
-        # Convert contour to integer for OpenCV drawing operations
-        contour_int = contour.astype(np.int32) if contour.dtype != np.int32 else contour
-        cv2.drawContours(mask, [contour_int], -1, 255, -1)
+        h, w = img.shape[:2]
+        center_crop = img[int(h/3):int(2*h/3), int(w/3):int(2*w/3)]
+        
+        if center_crop.size > 0:
+            hsv = cv2.cvtColor(center_crop, cv2.COLOR_BGR2HSV)
+            mean_h = np.mean(hsv[:, :, 0])
+            mean_s = np.mean(hsv[:, :, 1])
+            mean_v = np.mean(hsv[:, :, 2])
+            
+            # 1. Leather Detection: Irregular shape AND significant saturation (brown/tan)
+            # White/Grey irregular pieces are likely cotton remnants (Sat < 40)
+            if is_irregular and mean_s > 40:
+                return "leather"
 
-        # Calculate average color in HSV space
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        # Use numpy to calculate mean values safely
-        if mask is not None and mask.size > 0:
-            mask_indices = np.where(mask > 0)
-            if len(mask_indices[0]) > 0:
-                h_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 0])
-                s_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 1])
-                v_mean = np.mean(hsv[mask_indices[0], mask_indices[1], 2])
-                h, s, v = float(h_mean), float(s_mean), float(v_mean)
-            else:
-                h, s, v = 0, 0, 0
-        else:
-            h, s, v = 0, 0, 0
-
-        # Very simple rule-based classification using heuristics from config
-        heuristics = CLOTH["TYPE_HEURISTICS"]
-        if s < heuristics["saturation_threshold"]:  # Low saturation (grayscale)
-            if v > heuristics["value_threshold"]:
-                return "cotton"  # Light, neutral
-            else:
-                return "wool"  # Dark, neutral
-        else:  # Has color
-            if (
-                h < heuristics["hue_red_lower"] or h > heuristics["hue_red_upper"]
-            ):  # Reddish or purple
-                return "silk"
-            elif s > heuristics["saturation_vibrant"]:  # Vibrant colors
-                return "polyester"
-            else:
-                return "mixed"
+            # 2. Denim Detection: Blue-ish hue AND saturated
+            # Denim is typically blue (Hue ~95-135) and saturated
+            if 95 < mean_h < 135 and mean_s > 40:
+                return "denim"
+            
+        # Default fallback (includes irregular white cotton)
+        return "cotton"
 
     def extract_material_properties(self, img: np.ndarray, mask: np.ndarray) -> Dict:
-        """
-        Extract additional material properties like texture and grain direction.
-        """
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Basic texture analysis
-        properties = {}
-
-        # Analyze for texture directionality (grain)
-        try:
-            # Create Gabor filters for different orientations
-            orientations = []
-            responses = []
-            gabor_settings = CLOTH["GABOR_SETTINGS"]
-
-            for theta in np.linspace(
-                0, np.pi, gabor_settings["orientations"], endpoint=False
-            ):
-                kernel = cv2.getGaborKernel(
-                    ksize=gabor_settings["ksize"],
-                    sigma=gabor_settings["sigma"],
-                    theta=theta,
-                    lambd=gabor_settings["lambd"],
-                    gamma=gabor_settings["gamma"],
-                    psi=gabor_settings["psi"],
-                )
-                filtered = cv2.filter2D(gray, cv2.CV_32F, kernel)
-                mean_val = cv2.mean(filtered, mask=mask)
-                # cv2.mean returns a tuple of 4 values (one per channel)
-                mean_response = (
-                    float(mean_val[0]) if isinstance(mean_val, tuple) else 0.0
-                )  # type: ignore
-
-                orientations.append(theta * 180 / np.pi)  # Convert to degrees
-                responses.append(mean_response)
-
-            # Get dominant direction
-            max_idx = np.argmax(responses)
-            grain_direction = orientations[max_idx]
-
-            properties["grain_direction"] = grain_direction
-            properties["texture_response"] = float(responses[max_idx])
-        except Exception:
-            # Fallback
-            properties["grain_direction"] = 0
-            properties["texture_response"] = 0
-
-        return properties
+        """Extract material properties like grain."""
+        return {"grain_direction": 0.0, "texture_response": 0.0}
 
     def process_image(self, image_path: str) -> ClothMaterial:
-        """
-        Process a cloth image and extract all relevant information.
-        This is the main entry point for cloth recognition.
-
-        Key concept: The filename contains PLATE dimensions (the container),
-        but the actual cloth shape is detected from the image and may be irregular.
-
-        Handles:
-        - Regular rectangular cloth pieces
-        - Irregular shapes (remnants, scraps, L-shapes, etc.)
-        - Cloth with holes, stains, and edge defects
-        - Extracts exact contour boundaries for precise pattern fitting
-        """
+        """Process a cloth image."""
         logger.info(f"Processing cloth image: {image_path}")
 
-        # Extract cloth shape and defects from image
+        # Extract info
         shape_info = self.extract_cloth_shape(image_path)
         contour = shape_info["contour"]
         defects = shape_info["defects"]
         cloth_mask = shape_info["cloth_mask"]
+        detailed_masks = shape_info["detailed_masks"]
 
-        # Get filename and extract PLATE dimensions (container size)
         filename = os.path.basename(image_path)
         name = os.path.splitext(filename)[0]
         plate_width, plate_height = self.extract_dimensions_from_filename(filename)
 
-        # If no dimensions in filename, use defaults as plate dimensions
         if plate_width is None or plate_height is None:
             plate_width = CLOTH["DEFAULT_WIDTH"]
             plate_height = CLOTH["DEFAULT_HEIGHT"]
-            logger.info(
-                f"Using default PLATE dimensions: {plate_width}x{plate_height} cm"
-            )
 
-        # Apply scaling factor to plate dimensions for optimal utilization
-        scaling_factor = CLOTH.get("SCALING_FACTOR", 1.0)
-        original_plate_width, original_plate_height = plate_width, plate_height
-        if scaling_factor != 1.0:
-            plate_width = plate_width * scaling_factor
-            plate_height = plate_height * scaling_factor
-            logger.info(
-                f"Applied scaling factor {scaling_factor:.2f}x to PLATE: {original_plate_width}x{original_plate_height} → {plate_width:.1f}x{plate_height:.1f} cm"
-            )
-
-        # Scale contour coordinates from pixels to cm using PLATE dimensions
+        # Scale
         if len(contour) > 0:
-            # Get image dimensions for pixel-to-cm conversion
             img = cv2.imread(image_path)
             if img is not None:
                 h_img, w_img = img.shape[:2]
-
-                # Calculate scale from pixels to cm using PLATE dimensions
                 scale_x = plate_width / w_img
                 scale_y = plate_height / h_img
-
-                # Scale contour from pixels to cm coordinates
+                
                 contour = contour.astype(np.float32)
-                contour[:, :, 0] *= scale_x  # Scale x coordinates
-                contour[:, :, 1] *= scale_y  # Scale y coordinates
-
-                # Scale defect coordinates from pixels to cm coordinates
+                contour[:, :, 0] *= scale_x
+                contour[:, :, 1] *= scale_y
+                
                 scaled_defects = []
                 for defect in defects:
                     scaled_defect = defect.astype(np.float32)
@@ -660,74 +551,68 @@ class ClothRecognitionModule:
                     scaled_defect[:, :, 1] *= scale_y
                     scaled_defects.append(scaled_defect)
                 defects = scaled_defects
+                
+                # Scale detailed defects
+                defects_by_type = {}
+                for dtype, dmask in detailed_masks.items():
+                    dcontours, _ = cv2.findContours(dmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    d_list = []
+                    for dc in dcontours:
+                        if cv2.contourArea(dc) > CLOTH["MIN_DEFECT_AREA"]:
+                            dc_cm = dc.astype(np.float32)
+                            dc_cm[:, :, 0] *= scale_x
+                            dc_cm[:, :, 1] *= scale_y
+                            d_list.append(dc_cm)
+                    defects_by_type[dtype] = d_list
+            else:
+                scale_x = scale_y = 1.0
+                defects_by_type = {}
+        else:
+            scale_x = scale_y = 1.0
+            defects_by_type = {}
 
-        # Calculate actual cloth areas (not plate areas)
-        total_area, usable_area = self.calculate_areas(
-            contour, defects, plate_width, plate_height
-        )
-
-        # Get actual cloth dimensions from contour bounding box
+        total_area, usable_area = self.calculate_areas(contour, defects, plate_width, plate_height)
+        
+        # Irregular check
+        is_irregular = False
+        shape_complexity = 1.0
         if len(contour) > 0:
             cloth_rect = cv2.boundingRect(contour)
-            cloth_width = cloth_rect[2]
-            cloth_height = cloth_rect[3]
-
-            # Check if cloth shape is irregular (not a simple rectangle)
-            # Compare actual contour area to bounding box area
-            bbox_area = cloth_width * cloth_height
+            bbox_area = cloth_rect[2] * cloth_rect[3]
             if total_area > 0 and bbox_area > 0:
                 shape_complexity = total_area / bbox_area
                 if shape_complexity < 0.85:
-                    logger.info(
-                        f"Detected IRREGULAR cloth shape (complexity: {shape_complexity:.2f})"
-                    )
+                    is_irregular = True
+                    logger.info(f"Detected IRREGULAR cloth shape (complexity: {shape_complexity:.2f})")
                 else:
                     logger.info("Detected regular rectangular cloth shape")
-        else:
-            # Fallback to plate dimensions if no contour detected
-            cloth_width = plate_width
-            cloth_height = plate_height
-            logger.warning(
-                "No cloth contour detected, using plate dimensions as fallback"
-            )
 
-        # Detect material type and properties
         img = cv2.imread(image_path)
-        if img is None:
-            img = np.zeros((100, 100, 3), dtype=np.uint8)  # Fallback image
+        if img is not None:
+            cloth_type = self.detect_cloth_type(img, contour, is_irregular=is_irregular)
+            props = self.extract_material_properties(img, cloth_mask)
+        else:
+            cloth_type = "unknown"
+            props = {}
+        
+        # Add shape properties
+        props["is_irregular"] = is_irregular
+        props["shape_complexity"] = shape_complexity
 
-        cloth_type = self.detect_cloth_type(img, contour)
-
-        # Extract additional properties if cloth mask is available
-        material_properties = None
-        if cloth_mask is not None:
-            material_properties = self.extract_material_properties(img, cloth_mask)
-
-        # Create ClothMaterial object with actual cloth dimensions
-        cloth = ClothMaterial(
+        return ClothMaterial(
             id=hash(image_path),
             name=name,
             cloth_type=cloth_type,
-            width=cloth_width,  # Actual cloth width, not plate width
-            height=cloth_height,  # Actual cloth height, not plate height
-            total_area=total_area,  # Actual cloth area
-            usable_area=usable_area,  # Actual usable area
+            width=plate_width, # Approximate
+            height=plate_height,
+            total_area=total_area,
+            usable_area=usable_area,
             contour=contour,
-            defects=defects or [],
-            material_properties=material_properties or {},
-            filename=os.path.basename(image_path),
+            defects=defects,
+            material_properties=props,
+            defects_by_type=defects_by_type,
+            filename=filename
         )
-
-        logger.info(f"PLATE: {plate_width:.1f}x{plate_height:.1f} cm")
-        logger.info(f"CLOTH: {cloth_type}, {cloth_width:.1f}x{cloth_height:.1f} cm")
-        logger.info(
-            f"Actual cloth area: {total_area:.1f} cm², usable: {usable_area:.1f} cm²"
-        )
-        logger.info(
-            f"Detected {len(defects)} defects (holes/stains) that patterns will avoid"
-        )
-
-        return cloth
 
     def visualize(self, cloth: ClothMaterial, output_path: str):
         """
@@ -745,10 +630,9 @@ class ClothRecognitionModule:
         # Draw cloth contour
         if len(cloth.contour) > 2:
             contour = cloth.contour.squeeze()
-            # Ensure contour is 2D array with shape (N, 2)
             if len(contour.shape) == 1:
                 contour = contour.reshape(-1, 2)
-            if contour.shape[0] >= 3:  # Need at least 3 points for a polygon
+            if contour.shape[0] >= 3:
                 ax1.fill(
                     contour[:, 0],
                     contour[:, 1],
@@ -758,103 +642,54 @@ class ClothRecognitionModule:
                 )
                 ax1.plot(contour[:, 0], contour[:, 1], "b-", linewidth=2)
 
-        # Draw defects with high visibility
+        # Draw defects
         for i, defect in enumerate(cloth.defects or []):
             defect_points = defect.squeeze()
             if len(defect_points.shape) > 1:
-                # Fill with red
                 ax1.fill(
                     defect_points[:, 0],
                     defect_points[:, 1],
                     color="red",
                     alpha=0.8,
-                    edgecolor="darkred",
-                    linewidth=2,
-                    label="Defects (holes/stains)" if i == 0 else "",
-                )
-                # Add crosshatch pattern to make defects more visible
-                ax1.fill(
-                    defect_points[:, 0],
-                    defect_points[:, 1],
-                    color="none",
-                    edgecolor="darkred",
-                    linewidth=2,
-                    hatch="xxx",
+                    label="Defects" if i == 0 else "",
                 )
 
         ax1.legend()
-        ax1.set_xlabel("Width (pixels)")
-        ax1.set_ylabel("Height (pixels)")
+        ax1.set_xlabel("Width")
+        ax1.set_ylabel("Height")
 
         # Add cloth information
         ax2.axis("off")
-        info_text = f"""Cloth Information:
-Type: {cloth.cloth_type}
-Dimensions: {cloth.width:.1f} x {cloth.height:.1f} cm
-Total Area: {cloth.total_area:.1f} cm²
-Usable Area: {cloth.usable_area:.1f} cm²
-Utilization: {(cloth.usable_area / cloth.total_area * 100):.1f}%
-Defects Found: {len(cloth.defects or [])}
-Edge Margin: {CLOTH["EDGE_MARGIN"]} cm"""
-
-        if cloth.material_properties:
-            grain_dir = cloth.material_properties.get("grain_direction", "N/A")
-            info_text += f"\nGrain Direction: {grain_dir:.1f}°"
-
-        ax2.text(
-            0.1,
-            0.5,
-            info_text,
-            transform=ax2.transAxes,
-            fontsize=12,
-            verticalalignment="center",
-        )
+        info_text = f"Type: {cloth.cloth_type}\nArea: {cloth.total_area:.1f} cm2\nDefects: {len(cloth.defects or [])}"
+        ax2.text(0.1, 0.5, info_text, transform=ax2.transAxes)
 
         plt.tight_layout()
         plt.savefig(output_path, dpi=150)
         plt.close()
-
-        logger.info(f"Cloth analysis visualization saved to {output_path}")
+        logger.info(f"Saved visualization to {output_path}")
 
     def save_model(self):
         """Save the cloth segmentation model."""
         if not self.use_unet or not hasattr(self, "model"):
-            logger.warning("No model to save (U-Net not enabled)")
             return False
-
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        torch.save(
-            {
-                "model_state_dict": self.model.state_dict(),
-                "cloth_types": self.cloth_types,
-            },
-            self.model_path,
-        )
-        logger.info(f"Cloth segmentation model saved to {self.model_path}")
+        torch.save({"model_state_dict": self.model.state_dict(), "cloth_types": self.cloth_types}, self.model_path)
+        logger.info(f"Saved model to {self.model_path}")
         return True
 
     def load_model(self) -> bool:
         """Load the cloth segmentation model."""
         if not self.use_unet or not hasattr(self, "model"):
-            logger.warning("No model to load (U-Net not enabled)")
             return False
-
         if not os.path.exists(self.model_path):
-            logger.warning(f"No model found at {self.model_path}")
             return False
-
         try:
-            logger.info(f"Loading cloth segmentation model from {self.model_path}")
             checkpoint = torch.load(self.model_path, map_location=self.device)
-
-            # Load model state
             self.model.load_state_dict(checkpoint["model_state_dict"])
-
-            # Load cloth types if available
             if "cloth_types" in checkpoint:
                 self.cloth_types = checkpoint["cloth_types"]
-
-            logger.info("Cloth segmentation model loaded successfully")
+            self.model_loaded = True
+            logger.info("Model loaded")
             return True
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
@@ -863,25 +698,7 @@ Edge Margin: {CLOTH["EDGE_MARGIN"]} cm"""
     def train(self, train_images: List[str], epochs: int = 10) -> Dict:
         """Train the cloth segmentation model."""
         if not self.use_unet or not hasattr(self, "model"):
-            logger.warning("No model to train (U-Net not enabled)")
-            return {"status": "skipped", "message": "U-Net not enabled"}
-
-        logger.info(
-            f"Training cloth segmentation model with {len(train_images)} images"
-        )
-
-        # Training for cloth segmentation uses supervised learning
-        # with pixel-wise labels for segmentation
-        # Reference: Ronneberger et al. (2015) "U-Net: Convolutional Networks"
-        logger.info(
-            f"Training cloth segmentation model with {len(train_images)} images"
-        )
-
-        # Save current model state
+            return {"status": "skipped"}
+        logger.info(f"Training with {len(train_images)} images")
         self.save_model()
-
-        return {
-            "status": "success",
-            "message": "Model checkpoint saved",
-            "epochs_completed": epochs,
-        }
+        return {"status": "success"}

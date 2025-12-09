@@ -135,7 +135,7 @@ CLOTH = {
     "USE_UNET": True,  # U-Net proven effective for fabric segmentation
     # HSV ranges for fabric detection from textile imaging research
     "HSV_LOWER": [0, 0, 50],  # Exclude very dark areas (shadows)
-    "HSV_UPPER": [180, 255, 240],  # Exclude pure white (background)
+    "HSV_UPPER": [180, 255, 230],  # Exclude pure white (background) AND generated background
     # Morphological operations from image processing standards
     "MORPH_KERNEL_SIZE": 5,  # 5x5 kernel for noise removal
     "MORPH_ITERATIONS": 2,  # 2 iterations balance noise removal and detail preservation
@@ -147,7 +147,14 @@ CLOTH = {
     # Minimum defect size from textile quality control standards
     # Based on industrial quality control: defects < 0.5cm² are considered acceptable
     # Increased to reduce false positives from cloth texture
-    "MIN_DEFECT_AREA": 100,  # 100 pixels minimum defect size (approx 1 cm²) to filter noise
+    "MIN_DEFECT_AREA": 300,  # 300 pixels minimum defect size (approx 3 cm²) to filter noise
+    # Defect detection thresholds (sigma multipliers)
+    # Increased to reduce false positives
+    "DEFECT_THRESHOLDS": {
+        "hole_sigma": 3.0,  # Higher = less sensitive to dark spots
+        "stain_sigma": 3.0,  # Higher = less sensitive to bright/color spots
+        "texture_sigma": 3.0,  # Higher = less sensitive to texture variations
+    },
     # Defect safety margin - patterns must stay this far from defects (in pixels before scaling)
     "DEFECT_SAFETY_MARGIN": 5,  # 5 pixels safety margin around defects
     # Edge defect detection threshold for Sobel gradient magnitude
@@ -164,6 +171,7 @@ CLOTH = {
         "linen",
         "mixed",
         "remnant",
+        "leather",
     ],
     # Texture analysis parameters from Gabor filter research
     # Based on Jain & Farrokhnia (1991) "Unsupervised texture segmentation using Gabor filters"
@@ -257,6 +265,11 @@ FITTING = {
         "state_dim": 20,  # Features: pattern dims, cloth state, placement history
         "action_dim": 4,  # x, y, rotation_idx, flip
     },
+    # Auto-scaling settings for maximizing fit
+    "AUTO_SCALE": True,  # Automatically scale patterns up to fit better
+    "SCALE_STEP": 0.1,  # Step size for searching optimal scale (e.g. 1.0, 1.1, 1.2...)
+    "MAX_SCALE": 3.0,  # Maximum allowed scale factor
+    "MIN_PATTERNS_PERCENT": 1.0,  # Require 100% of patterns to fit at the new scale
 }
 
 # Visualization settings

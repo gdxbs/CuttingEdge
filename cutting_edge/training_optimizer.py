@@ -23,6 +23,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+try:
+    from skopt import Optimizer
+    from skopt.space import Real, Integer, Categorical
+    from skopt.utils import use_named_args
+    SKOPT_AVAILABLE = True
+except ImportError as e:
+    SKOPT_AVAILABLE = False
+    logger.warning(f"scikit-optimize not installed or failed to load. Bayesian Optimization will be unavailable. Error: {e}")
+
+
 
 class HeuristicOptimizer:
     """
@@ -461,3 +471,159 @@ class HeuristicOptimizer:
         """Load best configuration from file."""
         with open(config_path, "r") as f:
             return json.load(f)
+
+class BayesianOptimizer(HeuristicOptimizer):
+    """
+    Optimizes parameters using Bayesian Optimization (Gaussian Process).
+    More efficient than grid search for finding optimal hyperparameters.
+    """
+    
+    def __init__(self, system):
+        super().__init__(system)
+        if not SKOPT_AVAILABLE:
+            raise ImportError("scikit-optimize is required for BayesianOptimizer")
+            
+        # Define search space dimensions
+        self.rotation_options = [
+            [0, 90, 180, 270],  # 0: Orthogonal
+            [0, 45, 90, 135, 180, 225, 270, 315],  # 1: 8-way
+            list(range(0, 360, 30)),  # 2: 12-way
+        ]
+        
+    def optimize(
+        self,
+        train_samples: List[Dict],
+        val_samples: List[Dict],
+        n_calls: int = 20,
+        random_starts: int = 5
+    ) -> Dict:
+        """
+        Run Bayesian Optimization.
+        
+        Args:
+            train_samples: Training data
+            val_samples: Validation data
+            n_calls: Total number of iterations
+            random_starts: Number of random initialization steps
+            
+        Returns:
+            Dictionary with best_config and history
+        """
+        logger.info("\n" + "=" * 70)
+        logger.info("BAYESIAN OPTIMIZATION")
+        logger.info("=" * 70)
+        
+        # Define search space
+        dimensions = [
+            Integer(15, 30, name="grid_size"),
+            Categorical([0, 1, 2], name="rotation_idx"),
+            Categorical([True, False], name="allow_flipping"),
+            Integer(300, 1000, name="max_attempts")
+        ]
+        
+        # Initialize Optimizer
+        opt = Optimizer(
+            dimensions=dimensions, 
+            random_state=42,
+            base_estimator="GP",  # Gaussian Process
+            n_initial_points=random_starts
+        )
+        
+        logger.info(f"Optimization plan: {n_calls} calls ({random_starts} random starts)")
+        logger.info("Search Space:")
+        logger.info("  grid_size: [15, 30] (Integer)")
+        logger.info("  rotation_idx: [0, 1, 2] (Categorical)")
+        logger.info("  allow_flipping: [True, False] (Categorical)")
+        logger.info("  max_attempts: [300, 1000] (Integer)")
+        logger.info("=" * 70)
+        
+        for i in range(n_calls):
+            # Ask for next configuration
+            suggested = opt.ask()
+            
+            # Map suggestions to config dict
+            # suggested is a list corresponding to dimensions order
+            grid_size = suggested[0]
+            rot_idx = int(suggested[1])
+            allow_flipping = suggested[2]
+            max_attempts = suggested[3]
+            
+            config = {
+                "grid_size": int(grid_size),
+                "rotation_angles": self.rotation_options[rot_idx],
+                "allow_flipping": bool(allow_flipping),
+                "max_attempts": int(max_attempts)
+            }
+            
+            # Additional metadata for logging/history
+            config_meta = {
+                "rotation_idx": rot_idx,
+                "rotation_desc": f"{len(config['rotation_angles'])}_way"
+            }
+            config.update(config_meta)
+            
+            logger.info(f"--- Iteration {i+1}/{n_calls} ---")
+            logger.info(f"Testing: {self._format_meta_config(config)}")
+            
+            # Apply and Evaluate
+            self._apply_config(config)
+            
+            start_time = time.time()
+            # Evaluate using internal helper (reuses HeuristicOptimizer logic)
+            # We typically care about validation score for optimization objective
+            # But we calculate both for logging
+            train_metrics = self._evaluate(train_samples)
+            val_metrics = self._evaluate(val_samples)
+            eval_time = time.time() - start_time
+            
+            # Calculate objective score (Negative for minimization)
+            # Weighted score: 70% utilization, 30% success
+            score = (val_metrics["utilization"] * 0.7 + val_metrics["success_rate"] * 0.3)
+            objective_value = -score  # Minimize negative score
+            
+            # Tell optimizer the result
+            opt.tell(suggested, objective_value)
+            
+            # Record result
+            # Clean config for storage (remove meta if needed, but useful to keep)
+            clean_config = config.copy()
+            
+            result = {
+                "iteration": i + 1,
+                "config": clean_config,
+                "train_metrics": train_metrics,
+                "val_metrics": val_metrics,
+                "eval_time": eval_time,
+                "score": score
+            }
+            self.training_history.append(result)
+            
+            # Log
+            logger.info(
+                f"Val: util={val_metrics['utilization']:.1f}% "
+                f"success={val_metrics['success_rate']:.1f}% "
+                f"score={score:.2f}"
+            )
+            
+            # Update best
+            if score > self.best_score:
+                self.best_score = score
+                self.best_config = clean_config
+                logger.info(f"✓ NEW BEST! Score: {score:.2f}")
+                
+        logger.info("\n" + "=" * 70)
+        logger.info("BAYESIAN OPTIMIZATION COMPLETE")
+        logger.info(f"Best Score: {self.best_score:.2f}")
+        logger.info("=" * 70)
+        
+        return {
+            "best_config": self.best_config,
+            "best_score": self.best_score,
+            "training_history": self.training_history
+        }
+
+    def _format_meta_config(self, config):
+        return (f"grid={config['grid_size']}, "
+                f"rot={config.get('rotation_desc', 'custom')}, "
+                f"flip={config['allow_flipping']}, "
+                f"attempts={config['max_attempts']}")

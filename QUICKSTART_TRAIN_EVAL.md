@@ -19,6 +19,9 @@ source .venv/bin/activate  # Unix/Mac
 # Run hyperparameter optimization (5-10 minutes)
 python -m cutting_edge.main --mode train
 
+# Run Bayesian Optimization (5-10 minutes)
+python -m cutting_edge.main --mode train --optimizer bayesian
+
 # This will:
 # ✓ Test different parameter combinations
 # ✓ Find the best configuration
