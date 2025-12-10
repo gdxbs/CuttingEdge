@@ -633,7 +633,7 @@ class ClothRecognitionModule:
             plate_width = plate_width * scaling_factor
             plate_height = plate_height * scaling_factor
             logger.info(
-                f"Applied scaling factor {scaling_factor:.2f}x to PLATE: {original_plate_width}x{original_plate_height} → {plate_width:.1f}x{plate_height:.1f} cm"
+                f"Applied scaling factor {scaling_factor:.2f}x to PLATE: {original_plate_width}x{original_plate_height} -> {plate_width:.1f}x{plate_height:.1f} cm"
             )
 
         # Scale contour coordinates from pixels to cm using PLATE dimensions
