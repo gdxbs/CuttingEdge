@@ -572,6 +572,15 @@ class CuttingEdgeSystem:
                 f.write("ADVANCED METRICS:\n")
                 f.write("-" * 70 + "\n")
                 
+                # Defect Detection F1 Scores
+                defect_f1 = extra_metrics.get("defect_f1", {})
+                if defect_f1:
+                    f.write(f"DEFECT DETECTION F1 SCORES:\n")
+                    for dtype in ["hole", "stain", "line", "freeform"]:
+                        f1_val = defect_f1.get(dtype, 0)
+                        f.write(f"  {dtype.capitalize()}: {f1_val:.3f}\n")
+                    f.write("\n")
+                
                 # Grain Direction
                 grain_errs = extra_metrics.get("grain_errors", [])
                 if grain_errs:
@@ -1052,11 +1061,29 @@ class CuttingEdgeSystem:
                  gt_w, gt_h = self.pattern_module.extract_dimensions_from_filename(fname)
                  
                  # Classification GT (simple heuristic from filename)
+                 # Type aliases: map common filename patterns to canonical types
+                 type_aliases = {
+                     "tee": "shirt", "t_shirt": "shirt", "blouse": "shirt", "top": "shirt",
+                     "jacket": "other", "coat": "other", "hood": "other", "vest": "other",
+                     "trouser": "pants", "jean": "pants", "short": "pants",
+                     "gown": "dress", "frock": "dress",
+                     "arm": "sleeve", "cuff": "sleeve",
+                     "neck": "collar", "neckline": "collar",
+                     "front": "bodice", "back": "bodice", "panel": "other"
+                 }
                  gt_type = "other"
+                 fname_lower = fname.lower()
+                 # First check canonical types
                  for ptype in self.pattern_module.pattern_types:
-                     if ptype in fname.lower():
+                     if ptype in fname_lower:
                          gt_type = ptype
                          break
+                 # Then check aliases if no match
+                 if gt_type == "other":
+                     for alias, canon_type in type_aliases.items():
+                         if alias in fname_lower:
+                             gt_type = canon_type
+                             break
                  
                  # Accuracy
                  if gt_type in class_acc_stats:

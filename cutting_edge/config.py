@@ -270,6 +270,8 @@ FITTING = {
     "SCALE_STEP": 0.1,  # Step size for searching optimal scale (e.g. 1.0, 1.1, 1.2...)
     "MAX_SCALE": 3.0,  # Maximum allowed scale factor
     "MIN_PATTERNS_PERCENT": 1.0,  # Require 100% of patterns to fit at the new scale
+    # Coarse resolution for auto-scale feasibility checks (speeds up by ~25x vs 1cm)
+    "SCALE_CHECK_RESOLUTION": 5.0,  # cm - used during binary search for optimal scale
 }
 
 # Visualization settings

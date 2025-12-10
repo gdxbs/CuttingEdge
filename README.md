@@ -177,3 +177,31 @@ isort .
 ruff check .
 mypy .
 ```
+
+---
+
+## Future Work & Unused Features
+
+### Dormant Features
+
+These components exist in the code but are not currently active:
+
+1. **AI Pattern Recognition** (`pattern_recognition_module.py`): Neural network for pattern classification exists but `train()` is a placeholder. Currently uses filename parsing.
+2. **Neural Placement Optimizer** (`pattern_fitting_module.py`): RL agent structure exists. Enable with `FITTING["USE_NEURAL_OPTIMIZER"] = True`.
+3. **U-Net Cloth Segmentation** (`cloth_recognition_module.py`): U-Net architecture implemented but untrained. Uses color-based segmentation by default.
+
+### Roadmap
+
+**Short Term:**
+- Parallel processing for "All Cloths" mode
+- GPU acceleration for geometry checks
+- Web interface (Streamlit/Flask)
+
+**Medium Term:**
+- Pattern classification training with labeled dataset
+- Reinforcement learning for packing optimization
+
+**Long Term:**
+- 3D garment visualization
+- Defect-aware generative nesting
+- Camera integration for AR cutting guidance
