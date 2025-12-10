@@ -178,3 +178,50 @@ The modular design makes it easy to extend the system:
 - **Neural Optimization**: Can be enabled/disabled based on computational resources
 - **Configurable Complexity**: Parameters like grid size and rotation angles can be adjusted
 - **Sample Limiting**: Large search spaces are sampled to maintain reasonable performance
+
+---
+
+## Pattern Fitting Mechanism (Deep Dive)
+
+The `cutting_edge/pattern_fitting_module.py` is the core intelligence of the application, responsible for solving the **2D irregular packing problem**. It figures out how to optimally arrange garment patterns onto a piece of cloth (which may be a scrap/remnant with holes) to maximize material utilization.
+
+### High-Level Architecture
+
+The module is built around one main class, **`PatternFittingModule`**, which handles the geometry, logic, and optimization strategies. It optionally uses a **`PlacementOptimizer`** neural network to "guess" good placements.
+
+*   **Inputs**: A list of `Pattern` objects (shapes to cut) and a `ClothMaterial` object (fabric canvas).
+*   **Outputs**: Valid (x, y) coordinates, rotation, and flip status for each pattern.
+*   **Key Libraries**:
+    *   **Shapely**: Handles complex geometry (polygon interactions, overlaps, containment).
+    *   **PyTorch**: Runs the neural network for placement suggestions.
+    *   **Matplotlib**: Visualizes the final layout.
+
+### The Fitting Workflow (`fit_patterns`)
+
+The main entry point is the `fit_patterns` method. It follows this sequence:
+
+1.  **Auto-Scaling (Optional)**: If enabled (via `AUTO_SCALE` in config), runs a binary search simulation to find the largest scale factor that allows patterns to fit.
+2.  **Pre-Filtering**: Discards patterns mathematically impossible to fit (larger than cloth even when rotated).
+3.  **Sorting**: Patterns sorted by **Area (Descending)** - big pieces first is standard bin-packing heuristic.
+4.  **Sequential Placement**: Iterates through sorted patterns, calling `find_best_placement` for each.
+
+### Placement Logic (`find_best_placement`)
+
+Employs a **hybrid search strategy**:
+
+- **Neural Suggestion**: If enabled, `PlacementOptimizer` predicts a "best guess" position.
+- **Heuristic Search (BLF)**: Uses Bottom-Left-Fill algorithm (Jakobs, 1996) for remnant cloths.
+- **Grid Search**: Tests grid of positions with multiple rotations. **Early Stopping**: Stops if score exceeds `EXCELLENT_SCORE_THRESHOLD` (15.0).
+- **Dense Fallback**: If heuristic fails, triggers `_find_baseline_placement` with 5.0cm resolution.
+
+### Validation & Scoring
+
+- **Validity Check**: Containment (100% inside cloth), no overlaps, avoids defects.
+- **Scoring**: Edge bonus, utilization bonus, compactness bonus, grain alignment, gap penalty.
+
+### Key Features
+
+*   **Remnant Aware**: Handles non-rectangular cloth scraps.
+*   **Defect Avoidance**: Navigates around holes/stains.
+*   **Multi-Strategy**: Combines Neural AI, Heuristic BLF, and Grid search.
+*   **Dynamic**: Resizes patterns on the fly to maximize material usage.
