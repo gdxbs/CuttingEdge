@@ -204,9 +204,9 @@ class PatternFittingModule:
         high = max_scale
         best_valid_scale = 1.0
         
-        # Coarse resolution for faster checking (5cm instead of 1cm)
-        # This speeds up the check by ~25x
-        check_resolution = 5.0 
+        # Coarse resolution for faster feasibility checking
+        # Configured via FITTING["SCALE_CHECK_RESOLUTION"] (default 5.0 cm)
+        check_resolution = FITTING.get("SCALE_CHECK_RESOLUTION", 5.0)
         
         # Binary search iterations
         # specific precision target around 0.1 (scale_step)
@@ -501,7 +501,8 @@ class PatternFittingModule:
     @property
     def pattern_types(self):
         """Get list of pattern types for encoding."""
-        return ["shirt", "pants", "dress", "sleeve", "collar", "other"]
+        from .config import PATTERN
+        return PATTERN.get("TYPES", ["shirt", "pants", "dress", "sleeve", "collar", "other"])
 
     def _get_blf_positions(
         self,
@@ -677,61 +678,18 @@ class PatternFittingModule:
         # Create cloth polygons
         cloth_poly, defect_polys = self.create_cloth_polygon(cloth)
 
-        # Analyze cloth type
+        # Analyze cloth type (used for logging/future optimization)
         cloth_analysis = self.analyze_cloth_for_remnant(cloth)
-        is_remnant = cloth_analysis["is_remnant"]
+        # Note: is_remnant currently unused but available for future algorithm selection
+        _ = cloth_analysis["is_remnant"]
 
-        # Collect all positions to try
-        positions_to_try = []
-
-        # Initialize state variable for neural optimizer
-        state = None
-
-        # 1. Neural optimizer suggestions (if enabled and trained)
-        if self.use_neural and not is_remnant:  # Neural works better on regular cloth
-            try:
-                # Create state representation
-                state = self.create_state_representation(
-                    pattern, cloth, existing_placements
-                )
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-
-                # Get suggested placement
-                self.optimizer.eval()
-                with torch.no_grad():
-                    action, _ = self.optimizer(state_tensor)
-                    action = action.cpu().numpy()[0]
-
-                # Decode action
-                x_rel, y_rel, rot_rel, flip_prob = action
-
-                # Convert to actual values
-                x = x_rel * cloth.width
-                y = y_rel * cloth.height
-                rot_idx = int(rot_rel * len(self.rotation_angles))
-                rotation = self.rotation_angles[rot_idx]
-                flipped = flip_prob > 0.5 and self.allow_flipping
-
-                # Add suggestion to positions to try (prioritize it)
-                positions_to_try.append((x, y, rotation, flipped))
-            except Exception as e:
-                logger.warning(
-                    f"Neural optimizer failed: {e}, falling back to grid search"
-                )
-
-        # 2. Use appropriate algorithm based on cloth type and config
-        if FITTING.get("USE_BLF", False) and is_remnant:
-            # Use Bottom-Left-Fill for remnants [1]
-            positions_to_try.extend(
-                self._get_blf_positions(pattern, cloth_poly, existing_placements)
-            )
-
-        # 3. Grid search (always as fallback)
-        # Use instance grid_size (can be optimized)
+        # Grid search is the primary placement algorithm
+        # BLF is used only in baseline_mode via _find_baseline_placement()
+        # Neural optimizer (USE_NEURAL_OPTIMIZER) is experimental and disabled by default
         step_x = cloth.width / self.grid_size
         step_y = cloth.height / self.grid_size
 
-        # Generate grid positions
+        # Generate grid positions with all rotation/flip combinations
         positions_to_try = []
 
         for i in range(self.grid_size):
