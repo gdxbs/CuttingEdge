@@ -732,8 +732,8 @@ class PatternFittingModule:
         step_y = cloth.height / self.grid_size
 
         # Generate grid positions
-        positions_to_try = []
-
+        # positions_to_try already has neural/BLF suggestions, so we append to it
+        
         for i in range(self.grid_size):
             for j in range(self.grid_size):
                 x = i * step_x

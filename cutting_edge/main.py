@@ -488,6 +488,7 @@ class CuttingEdgeSystem:
                         "total_placed": int(total_placed),
                         "total_attempted": int(total_attempted),
                     },
+                    "advanced_metrics": extra_metrics,
                     "detailed_results": test_results,
                 },
                 f,
@@ -965,7 +966,7 @@ class CuttingEdgeSystem:
 
         return results
 
-    def run_evaluation(self):
+    def run_evaluation(self, baseline_mode: bool = False):
         """
         Run comprehensive evaluation on test set with best configuration.
 
@@ -1051,11 +1052,27 @@ class CuttingEdgeSystem:
                  fname = os.path.basename(pat_path)
                  gt_w, gt_h = self.pattern_module.extract_dimensions_from_filename(fname)
                  
-                 # Classification GT (simple heuristic from filename)
+                 # Classification GT (refined mapping)
+                 fname_lower = fname.lower()
                  gt_type = "other"
-                 for ptype in self.pattern_module.pattern_types:
-                     if ptype in fname.lower():
-                         gt_type = ptype
+                 
+                 # Map common file terms to standard pattern types
+                 type_mapping = {
+                     "skirt": "skirt",
+                     "dress": "dress",
+                     "pants": "pants",
+                     "trouser": "pants",
+                     "tee": "shirt",
+                     "shirt": "shirt",
+                     "jacket": "shirt", # Approximation
+                     "sleeve": "sleeve",
+                     "collar": "collar",
+                     "bodice": "bodice"
+                 }
+                 
+                 for key, val in type_mapping.items():
+                     if key in fname_lower:
+                         gt_type = val
                          break
                  
                  # Accuracy
@@ -1127,7 +1144,7 @@ class CuttingEdgeSystem:
                 grain_errors.append(error)
 
             # Fit patterns
-            result = self.fitting_module.fit_patterns(patterns, cloth)
+            result = self.fitting_module.fit_patterns(patterns, cloth, baseline_mode=baseline_mode)
 
             elapsed_time = time.time() - start_time
 
@@ -1740,6 +1757,11 @@ def main():
         action="store_true",
         help="Disable automatic pattern scaling (force 1.0x scale)",
     )
+    parser.add_argument(
+        "--use_baseline",
+        action="store_true",
+        help="Use baseline algorithm (BLF) for evaluation",
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -1766,7 +1788,7 @@ def main():
 
     elif args.mode == "eval":
         # Evaluation mode
-        system.run_evaluation()
+        system.run_evaluation(baseline_mode=args.use_baseline)
 
     elif args.mode == "fit":
         # Fitting mode
