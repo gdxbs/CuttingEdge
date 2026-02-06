@@ -836,10 +836,10 @@ class PatternFittingModule:
 
             if placement:
                 placed_patterns.append(placement)
-                logger.info(f"  ✓ Successfully placed {pattern.name}")
+                logger.info(f"  V Successfully placed {pattern.name}")
             else:
                 failed_patterns.append(pattern)
-                logger.info(f"  ✗ Failed to place {pattern.name}")
+                logger.info(f"  X Failed to place {pattern.name}")
 
         # Calculate metrics
         total_pattern_area = sum(p.pattern.area for p in placed_patterns)

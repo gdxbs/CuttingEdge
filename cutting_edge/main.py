@@ -815,7 +815,7 @@ class CuttingEdgeSystem:
         }
 
         # Run optimization
-        results = optimizer.optimize(train_samples, val_samples, param_grid)
+        results = optimizer.optimize(train_samples, val_samples, n_calls=epochs)
 
         # Apply best configuration
         if results["best_config"]:

@@ -15,7 +15,9 @@ import logging
 import os
 import time
 from datetime import datetime
-from itertools import product
+from skopt import gp_minimize
+from skopt.space import Real, Integer, Categorical
+from skopt.utils import use_named_args
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -40,69 +42,88 @@ class HeuristicOptimizer:
         self,
         train_samples: List[Dict],
         val_samples: List[Dict],
-        param_grid: Dict[str, List] | None = None,
+        n_calls: int = 25,
     ) -> Dict:
         """
-        Run hyperparameter optimization.
+        Run hyperparameter optimization using Bayesian Optimization.
 
         Args:
-            train_samples: List of training samples (patterns + cloth combos)
-            val_samples: List of validation samples
-            param_grid: Dictionary of parameters to search over
+            train_samples: List of training samples.
+            val_samples: List of validation samples.
+            n_calls: The number of optimization iterations to run.
 
         Returns:
-            Dictionary with best_config, best_score, and all_results
+            Dictionary with best_config, best_score, and training_history.
         """
-        grid = param_grid if param_grid is not None else self._get_default_param_grid()
+        # Define the search space for the optimizer
+        rotation_options = [
+            [0, 90, 180, 270],
+            [0, 45, 90, 135, 180, 225, 270, 315],
+            list(range(0, 360, 30)),
+        ]
+        search_space = [
+            Integer(15, 40, name="grid_size"),
+            Integer(0, len(rotation_options) - 1, name="rotation_angles_idx"),
+            Categorical([True, False], name="allow_flipping"),
+            Integer(300, 1500, name="max_attempts"),
+        ]
 
         logger.info("\n" + "=" * 70)
-        logger.info("HYPERPARAMETER OPTIMIZATION")
+        logger.info("BAYESIAN HYPERPARAMETER OPTIMIZATION")
         logger.info("=" * 70)
         logger.info(f"Training samples: {len(train_samples)}")
         logger.info(f"Validation samples: {len(val_samples)}")
+        logger.info(f"Number of optimization calls: {n_calls}")
         logger.info("\nParameter Search Space:")
-        for param, values in grid.items():
-            logger.info(
-                f"  {param}: {values if len(str(values)) < 60 else f'{len(values)} options'}"
-            )
+        for dim in search_space:
+            logger.info(f"  {dim.name}: {dim}")
         logger.info("=" * 70)
 
-        # Calculate total combinations
-        total_combinations = 1
-        for values in grid.values():
-            total_combinations *= len(values)
+        # This list will be populated by the objective function
+        self.training_history = []
+        iteration_count = 0
 
-        logger.info(f"\nTotal configurations to test: {total_combinations}\n")
+        @use_named_args(search_space)
+        def objective(**params):
+            nonlocal iteration_count
+            iteration_count += 1
 
-        # Grid search
-        iteration = 0
-        for config_values in product(*grid.values()):
-            iteration += 1
-            config = dict(zip(grid.keys(), config_values))
+            # Map index back to the actual list of angles
+            config = dict(params)
+            config["rotation_angles"] = rotation_options[config.pop("rotation_angles_idx")]
 
-            logger.info(f"--- Config {iteration}/{total_combinations} ---")
+            logger.info(f"--- Iteration {iteration_count}/{n_calls} ---")
             logger.info(f"Testing: {self._format_config(config)}")
 
-            # Apply configuration
             self._apply_config(config)
 
-            # Evaluate on train and validation
             start_time = time.time()
             train_metrics = self._evaluate(train_samples)
             val_metrics = self._evaluate(val_samples)
             eval_time = time.time() - start_time
+            
+            val_score = (
+                val_metrics["utilization"] * 0.85 + val_metrics["success_rate"] * 0.15
+            )
 
-            # Store results
+            # Convert config to native Python types for JSON serialization
+            native_config = {
+                "grid_size": int(config["grid_size"]),
+                "rotation_angles": config["rotation_angles"],
+                "allow_flipping": bool(config["allow_flipping"]),
+                "max_attempts": int(config["max_attempts"]),
+            }
+
             result = {
-                "iteration": iteration,
-                "config": config,
+                "iteration": iteration_count,
+                "config": native_config,
                 "train_metrics": train_metrics,
                 "val_metrics": val_metrics,
                 "eval_time": eval_time,
+                "score": val_score,
             }
             self.training_history.append(result)
 
-            # Log results
             logger.info(
                 f"Train: util={train_metrics['utilization']:.1f}% "
                 f"success={train_metrics['success_rate']:.1f}% "
@@ -113,25 +134,38 @@ class HeuristicOptimizer:
                 f"success={val_metrics['success_rate']:.1f}% "
                 f"time={val_metrics['avg_time']:.2f}s"
             )
+            logger.info(f"Score: {val_score:.2f}")
 
-            # Track best (based on validation utilization + success rate)
-            val_score = (
-                val_metrics["utilization"] * 0.7 + val_metrics["success_rate"] * 0.3
-            )
-            if val_score > self.best_score:
-                self.best_score = val_score
-                self.best_config = config
-                logger.info(f"✓ NEW BEST! Score: {val_score:.2f}\n")
-            else:
-                logger.info("")
+            # gp_minimize tries to minimize the function, so we return the negative score
+            return -val_score
+
+        # Run the optimization
+        result = gp_minimize(
+            objective,
+            search_space,
+            n_calls=n_calls,
+            random_state=0,
+            n_initial_points=5, # Start with a few random points
+        )
+
+        # Extract the best results
+        self.best_score = -result.fun
+        best_params = result.x
+        
+        # Reconstruct the best configuration dictionary, ensuring native Python types
+        self.best_config = {
+            "grid_size": int(best_params[0]),
+            "rotation_angles": rotation_options[best_params[1]],
+            "allow_flipping": bool(best_params[2]),
+            "max_attempts": int(best_params[3]),
+        }
 
         logger.info("\n" + "=" * 70)
         logger.info("OPTIMIZATION COMPLETE")
         logger.info("=" * 70)
         logger.info(f"Best validation score: {self.best_score:.2f}")
-        logger.info(f"Best configuration:")
-        best_cfg = self.best_config or {}
-        for key, value in best_cfg.items():
+        logger.info(f"Best configuration found:")
+        for key, value in self.best_config.items():
             logger.info(f"  {key}: {value}")
         logger.info("=" * 70)
 
@@ -149,14 +183,13 @@ class HeuristicOptimizer:
         Balanced approach for reasonable training time (~10-15 min).
         """
         return {
-            "grid_size": [20, 25, 30],  # Expanded: 15 too coarse, added 30
+            "grid_size": [20, 25, 30],
             "rotation_angles": [
-                [0, 90, 180, 270],  # 4-way orthogonal (best for grain direction)
-                [0, 45, 90, 135, 180, 225, 270, 315],  # 8-way (more flexibility)
-                list(range(0, 360, 30)),  # 12-way (remnants/irregular)
+                [0, 90, 180, 270],
+                [0, 45, 90, 135, 180, 225, 270, 315],
             ],
-            "allow_flipping": [True, False],  # Keep True (best performer)
-            "max_attempts": [500, 700, 1000],  # Expanded: test quality vs speed
+            "allow_flipping": [True],
+            "max_attempts": [500, 800, 1200],
         }
 
     def _apply_config(self, config: Dict):
